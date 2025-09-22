@@ -95,6 +95,15 @@ class ContainerManager:
         if bad:
             raise RuntimeError(f"Порты заняты: {', '.join(bad)}")
 
+    def _assert_port_mapping_free(self, port_mapping: dict) -> None:
+        """Проверить, что все порты в маппинге свободны"""
+        bad = []
+        for host_port in port_mapping.keys():
+            if not self._port_free(int(host_port)):
+                bad.append(str(host_port))
+        if bad:
+            raise RuntimeError(f"Порты заняты: {', '.join(bad)}")
+
     def start(self, container_name: str, ssh_port: int, jup_port: int, ssh_password: str, jupyter_token: str, ssh_username: str = "root", gpus: Optional[str] = None, image: Optional[str] = None, cpuset_cpus: Optional[str] = None, memory_gb: Optional[int] = None, memory_swap_gb: Optional[int] = None, shm_size_gb: Optional[int] = None, storage_gb: Optional[int] = None) -> Optional[str]:
         """
         Запустить/создать контейнер с указанными параметрами.
@@ -181,6 +190,120 @@ class ContainerManager:
         print(f"[INFO] Name:    {name}")
         print(f"[INFO] SSH:     ssh -p {ssh_port} {ssh_username}@<host>  (пароль: {ssh_password})")
         print(f"[INFO] Jupyter: http://<host>:{jup_port}/lab (token:  {jupyter_token})")
+        
+        return container_id
+
+    def start_with_port_mapping(self, container_name: str, port_mapping: dict, ssh_password: str, jupyter_token: str, ssh_username: str = "root", gpus: Optional[str] = None, image: Optional[str] = None, cpuset_cpus: Optional[str] = None, memory_gb: Optional[int] = None, memory_swap_gb: Optional[int] = None, shm_size_gb: Optional[int] = None, storage_gb: Optional[int] = None) -> Optional[str]:
+        """
+        Запустить/создать контейнер с кастомным маппингом портов.
+        
+        Args:
+            container_name: имя контейнера
+            port_mapping: словарь {host_port: container_port} (например {42560: 22, 42561: 8888, 42562: 9000})
+            ssh_password: пароль SSH
+            jupyter_token: токен Jupyter 
+            ssh_username: имя пользователя SSH (по умолчанию "root")
+            gpus: GPU (по умолчанию все или список '0,2,3')
+            остальные параметры аналогично start()
+        
+        Returns:
+            container_id или None при ошибке
+        """
+        name = container_name
+
+        # Найдем SSH и Jupyter порты для логирования
+        ssh_port = None
+        jup_port = None
+        for host_port, container_port in port_mapping.items():
+            if container_port == 22:
+                ssh_port = host_port
+            elif container_port == 8888:
+                jup_port = host_port
+
+        if self._running(name):
+            print(f"[INFO] Контейнер уже запущен: {name}")
+            if ssh_port:
+                print(f"[INFO] SSH:     ssh -p {ssh_port} {ssh_username}@<host>  (пароль: {ssh_password})")
+            if jup_port:
+                print(f"[INFO] Jupyter: http://<host>:{jup_port}/lab (token:  {jupyter_token})")
+            return
+
+        if self._exists(name):
+            print(f"[INFO] Контейнер существует, стартуем: {name}")
+            self._run(["docker", "start", name])
+            print("[OK]   Запущено.")
+            if ssh_port:
+                print(f"[INFO] SSH:     ssh -p {ssh_port} {ssh_username}@<host>  (пароль: {ssh_password})")
+            if jup_port:
+                print(f"[INFO] Jupyter: http://<host>:{jup_port}/lab (token:  {jupyter_token})")
+            return
+
+        # Проверяем, что все порты свободны
+        self._assert_port_mapping_free(port_mapping)
+
+        image_to_run = image or self.s.image
+
+        if not self._docker_images_has(image_to_run):
+            raise RuntimeError(
+                f"Образ '{image_to_run}' недоступен. "
+                f"Проверьте подключение к интернету и доступность образа в реестре."
+            )
+
+        work_vol = f"{name}-work"
+        self._run(["docker", "volume", "create", work_vol])
+
+        env = [
+            "-e", f"SSH_PASSWORD={ssh_password}",
+            "-e", f"JUPYTER_TOKEN={jupyter_token}",
+            "-e", f"NVIDIA_DRIVER_CAPABILITIES={self.s.nvidia_caps}",
+            "-e", f"NVIDIA_VISIBLE_DEVICES={'all' if not gpus else gpus}",
+        ]
+
+        args = [
+            "docker", "run", "-d",
+            "--name", name,
+            "--runtime", self.s.runtime,
+            "--ulimit", "memlock=-1", "--ulimit", f"stack={self.s.ulimit_stack}",
+            # shm-size (overridable)
+            "--shm-size", (f"{shm_size_gb}g" if shm_size_gb is not None else self.s.shm_size),
+        ]
+        
+        # Добавляем все порты из маппинга
+        for host_port, container_port in port_mapping.items():
+            args.extend(["-p", f"{host_port}:{container_port}"])
+        
+        args.extend(env)
+        args.extend(["-v", f"{work_vol}:/work", "--restart", "unless-stopped"])
+
+        # CPU pinning
+        if cpuset_cpus:
+            args.extend(["--cpuset-cpus", cpuset_cpus])
+
+        # Memory limits
+        if memory_gb is not None:
+            args.extend(["--memory", f"{memory_gb}g"])
+            # memory-swap: if not provided, pin to same value
+            swap_gb = memory_swap_gb if memory_swap_gb is not None else memory_gb
+            args.extend(["--memory-swap", f"{swap_gb}g"])
+
+        # Storage size (may depend on storage driver support)
+        if storage_gb is not None and storage_gb > 0:
+            args.extend(["--storage-opt", f"size={storage_gb}G"])
+
+        # Finally, the image to run
+        args.append(image_to_run)
+        result = self._run(args, capture_output=True)
+        container_id = result.stdout.strip()
+
+        print("[OK]   Контейнер создан и запущен.")
+        print(f"[INFO] Name:    {name}")
+        if ssh_port:
+            print(f"[INFO] SSH:     ssh -p {ssh_port} {ssh_username}@<host>  (пароль: {ssh_password})")
+        if jup_port:
+            print(f"[INFO] Jupyter: http://<host>:{jup_port}/lab (token:  {jupyter_token})")
+        
+        # Логируем все порты
+        print(f"[INFO] Порты:   {dict(port_mapping)}")
         
         return container_id
 
@@ -451,3 +574,4 @@ As a library:
     m.start("my-container", 2222, 2223, "mypass", "mytoken", ssh_username="root", gpus="0,2")
     m.stop("my-container")
 """
+

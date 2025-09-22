@@ -23,7 +23,7 @@ AGENT_ID_FILE = ".agent_id"
 class Agent:
     """Основной класс агента"""
     
-    def __init__(self, secret_key: str, base_url: str = "https://api.gpunix.ru"):
+    def __init__(self, secret_key: str, base_url: str = "https://api.gpugo.ru"):
         self.secret_key = secret_key
         self.base_url = base_url
         self.agent_id = None
@@ -415,71 +415,140 @@ class Agent:
             ssh_port = container_info.get('ssh_port')
             ssh_host = container_info.get('ssh_host')
             
-            # Username больше не обязателен; требуем только пароль и порт
-            if not all([ssh_password, ssh_port]):
-                print("[ERROR] Missing SSH credentials in container_info")
+            # Проверяем наличие port_mapping для новой логики
+            port_mapping = container_info.get('port_mapping')
+            
+            if port_mapping and isinstance(port_mapping, dict):
+                # Новая логика с port_mapping
+                print(f"[INFO] Using port mapping: {port_mapping}")
+                
+                if not ssh_password:
+                    print("[ERROR] Missing SSH password in container_info")
+                    try:
+                        self.api_client.send_log("task error: missing ssh password")
+                    except Exception:
+                        pass
+                    return None
+                
+                # Формируем имя контейнера
+                task_id = task.get('id', int(time.time()))
+                container_name = f"task_{task_id}"
+                
+                # Используем новую функцию ContainerManager
                 try:
-                    self.api_client.send_log("task error: missing ssh credentials")
+                    self.api_client.send_log(f"task start requested: id={task_id} image={docker_image}")
                 except Exception:
                     pass
-                return None
-            
-            print(f"[INFO] Using SSH credentials from task:")
-            print(f"  Username: {ssh_username}")
-            print(f"  Port: {ssh_port}")
-            print(f"  Host: {ssh_host}")
-            
-            # Получаем выделенные ресурсы из задачи
-            gpus_allocated = task_data.get('gpus_allocated', {})
-            gpu_limit = gpus_allocated.get('count') if gpus_allocated else 0
-            
-            # Формируем имя контейнера (без зависимости от username)
-            task_id = task.get('id', int(time.time()))
-            container_name = f"task_{task_id}"
-            
-            # Вычисляем Jupyter порт (на 1 больше SSH порта)
-            jup_port = ssh_port + 1
-
-            # Используем ContainerManager для создания контейнера
-            try:
-                self.api_client.send_log(f"task start requested: id={task_id} image={docker_image}")
-            except Exception:
-                pass
-            container_id = self.container_manager.start(
-                container_name=container_name,
-                ssh_port=ssh_port,
-                jup_port=jup_port,
-                ssh_password=ssh_password,
-                jupyter_token=ssh_password,  # Используем тот же пароль для Jupyter
-                ssh_username=ssh_username,
-                gpus=gpus_param,
-                image=docker_image,
-                cpuset_cpus=cpuset_cpus,
-                memory_gb=memory_gb,
-                memory_swap_gb=memory_gb,
-                shm_size_gb=shm_size_gb,
-                storage_gb=storage_gb
-            )
-            
-            # Формируем результат
-            result = {
-                'container_id': container_id,
-                'container_name': container_name,
-                'ssh_port': ssh_port,
-                'ssh_host': ssh_host,
-                'ssh_command': container_info.get('ssh_command', f"ssh root@{ssh_host} -p {ssh_port}"),
-                'ssh_username': ssh_username,
-                'ssh_password': ssh_password,
-                'status': 'running',
-                'allocated_resources': {
-                    'cpu_cpuset': cpuset_cpus,
-                    'ram_gb': memory_gb,
-                    'gpu_count': gpu_required,
-                    'gpu_devices': gpus_param,
-                    'storage_gb': storage_gb,
-                    'gpu_support': bool(gpus_param)
+                    
+                container_id = self.container_manager.start_with_port_mapping(
+                    container_name=container_name,
+                    port_mapping=port_mapping,
+                    ssh_password=ssh_password,
+                    jupyter_token=ssh_password,  # Используем тот же пароль для Jupyter
+                    ssh_username=ssh_username,
+                    gpus=gpus_param,
+                    image=docker_image,
+                    cpuset_cpus=cpuset_cpus,
+                    memory_gb=memory_gb,
+                    memory_swap_gb=memory_gb,
+                    shm_size_gb=shm_size_gb,
+                    storage_gb=storage_gb
+                )
+                
+                # Находим SSH порт в маппинге для результата
+                ssh_port_result = None
+                for host_port, container_port in port_mapping.items():
+                    if container_port == 22:
+                        ssh_port_result = host_port
+                        break
+                
+                # Формируем результат для новой логики
+                result = {
+                    'container_id': container_id,
+                    'container_name': container_name,
+                    'ssh_port': ssh_port_result,
+                    'ssh_host': ssh_host,
+                    'ssh_command': container_info.get('ssh_command', f"ssh root@{ssh_host} -p {ssh_port_result}") if ssh_port_result else None,
+                    'ssh_username': ssh_username,
+                    'ssh_password': ssh_password,
+                    'port_mapping': port_mapping,  # Добавляем port_mapping в результат
+                    'status': 'running',
+                    'allocated_resources': {
+                        'cpu_cpuset': cpuset_cpus,
+                        'ram_gb': memory_gb,
+                        'gpu_count': gpu_required,
+                        'gpu_devices': gpus_param,
+                        'storage_gb': storage_gb,
+                        'gpu_support': bool(gpus_param)
+                    }
                 }
-            }
+                
+            else:
+                # Старая логика для обратной совместимости
+                if not all([ssh_password, ssh_port]):
+                    print("[ERROR] Missing SSH credentials in container_info")
+                    try:
+                        self.api_client.send_log("task error: missing ssh credentials")
+                    except Exception:
+                        pass
+                    return None
+                
+                print(f"[INFO] Using SSH credentials from task:")
+                print(f"  Username: {ssh_username}")
+                print(f"  Port: {ssh_port}")
+                print(f"  Host: {ssh_host}")
+                
+                # Получаем выделенные ресурсы из задачи
+                gpus_allocated = task_data.get('gpus_allocated', {})
+                gpu_limit = gpus_allocated.get('count') if gpus_allocated else 0
+                
+                # Формируем имя контейнера (без зависимости от username)
+                task_id = task.get('id', int(time.time()))
+                container_name = f"task_{task_id}"
+                
+                # Вычисляем Jupyter порт (на 1 больше SSH порта)
+                jup_port = ssh_port + 1
+
+                # Используем ContainerManager для создания контейнера
+                try:
+                    self.api_client.send_log(f"task start requested: id={task_id} image={docker_image}")
+                except Exception:
+                    pass
+                container_id = self.container_manager.start(
+                    container_name=container_name,
+                    ssh_port=ssh_port,
+                    jup_port=jup_port,
+                    ssh_password=ssh_password,
+                    jupyter_token=ssh_password,  # Используем тот же пароль для Jupyter
+                    ssh_username=ssh_username,
+                    gpus=gpus_param,
+                    image=docker_image,
+                    cpuset_cpus=cpuset_cpus,
+                    memory_gb=memory_gb,
+                    memory_swap_gb=memory_gb,
+                    shm_size_gb=shm_size_gb,
+                    storage_gb=storage_gb
+                )
+                
+                # Формируем результат для старой логики
+                result = {
+                    'container_id': container_id,
+                    'container_name': container_name,
+                    'ssh_port': ssh_port,
+                    'ssh_host': ssh_host,
+                    'ssh_command': container_info.get('ssh_command', f"ssh root@{ssh_host} -p {ssh_port}"),
+                    'ssh_username': ssh_username,
+                    'ssh_password': ssh_password,
+                    'status': 'running',
+                    'allocated_resources': {
+                        'cpu_cpuset': cpuset_cpus,
+                        'ram_gb': memory_gb,
+                        'gpu_count': gpu_required,
+                        'gpu_devices': gpus_param,
+                        'storage_gb': storage_gb,
+                        'gpu_support': bool(gpus_param)
+                    }
+                }
             
             print(f"[INFO] Container created successfully:")
             print(f"  Container ID: {result['container_id']}")
@@ -688,7 +757,7 @@ def main():
         sys.exit(1)
     
     secret_key = sys.argv[1]
-    base_url = os.getenv("API_BASE_URL", "https://api.gpunix.ru")
+    base_url = os.getenv("API_BASE_URL", "https://api.gpugo.ru")
 
     
     agent = Agent(secret_key, base_url=base_url)
