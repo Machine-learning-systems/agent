@@ -15,7 +15,7 @@
 ```bash
 sudo apt update
 sudo apt install -y git
-wget -qO- https://astral.sh/uv/install.sh | sh
+wget -qO- https://astral.sh/uv/install.sh | sudo sh
 ```
 
 ### Установка Docker
