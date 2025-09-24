@@ -1,39 +1,53 @@
-## GPUnix Agent
+# GpuGo Agent
 
-Интеллектуальный агент для подключения к GPUnix
+Интеллектуальный агент для подключения к GpuGo
 
-### Платформа
-- Ubuntu 24.04 LTS
 
-### Предварительная установка (Ubuntu 24.04)
+# Требования
+- Ubuntu 22.04 LTS или 24.04 LTS
+- Широкополосный интернет
+- NVIDIA GPU с установленными драйверами
+
+## Установка зависимостей
+
+### Установка Python 
+
 ```bash
 sudo apt update
-sudo apt install -y git python3 python3-venv python3-pip
+sudo apt install -y git
+wget -qO- https://astral.sh/uv/install.sh | sh
 ```
 
-### Установка Docker (Ubuntu 24.04)
+### Установка Docker
 
 Рекомендуемый способ — через официальный репозиторий Docker.
+https://docs.docker.com/engine/install/ubuntu (здесь можно ознакомиться с инструкцией подробнее)
 
 1) Удалить старые пакеты (если были):
 ```bash
-sudo apt remove -y docker docker-engine docker.io containerd runc || true
+for pkg in docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc; do sudo apt-get remove $pkg; done
 ```
 
-2) Зависимости и ключ репозитория Docker:
+2) Установка зависимостей:
 ```bash
-sudo apt update
-sudo apt install -y ca-certificates curl gnupg
+# Add Docker's official GPG key:
+sudo apt-get update
+sudo apt-get install ca-certificates curl
 sudo install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-sudo chmod a+r /etc/apt/keyrings/docker.gpg
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+# Add the repository to Apt sources:
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+  $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}") stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt-get update
 ```
 
-3) Подключить репозиторий Docker и установить пакеты:
+3) Установка Docker Engine:
 ```bash
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release; echo $VERSION_CODENAME) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-sudo apt update
-sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo apt-get install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 ```
 
 4) Запуск и доступ без sudo:
@@ -48,6 +62,21 @@ newgrp docker
 docker --version
 docker run --rm hello-world
 ```
+
+Если Вы получили вывод "Hello from Docker! ...", значит установка прошла успешно.
+
+### NVIDIA Cuda Toolkit
+
+Требуется перейти по ссылке и выбрать подходящие параметры для скачивания.
+
+https://developer.nvidia.com/cuda-downloads
+
+Operating System: Linux
+Architecture: x86_64
+Distribution: Ubuntu
+Version: 22.04 или 24.04
+Installer Type: deb (local)
+
 
 ### NVIDIA Container Toolkit
 
@@ -107,7 +136,7 @@ docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
 
 1. Клонирование репозитория
 ```bash
-git clone https://github.com/GPUnix/agent.git
+git clone https://github.com/Machine-learning-systems/agent.git
 ```
 
 2. Переход в директорию проекта
@@ -115,34 +144,19 @@ git clone https://github.com/GPUnix/agent.git
 cd agent
 ```
 
-3. Создание виртуального окружения
+3. Запуск (должен быть установлен uv из шага "Установка зависимостей > Установка Python")
 ```bash
-python3 -m venv .venv
-```
-
-4. Активация виртуального окружения
-```bash
-source .venv/bin/activate
-```
-
-5. Установка зависимостей
-```bash
-pip install -r requirements.txt
+uv run agent.py <YOUR_SECRET_KEY>
 ```
 
 6. Запуск агента в фоне через nohup
 ```bash
-nohup python3 agent.py <YOUR_SECRET_KEY> > agent.log 2>&1 &
+nohup uv run agent.py <YOUR_SECRET_KEY> > agent.log 2>&1 &
 ```
 
 Проверка логов:
 ```bash
 tail -f agent.log
-```
-
-Остановка процесса (пример):
-```bash
-pkill -f "python3 agent.py"
 ```
 
 ---
