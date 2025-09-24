@@ -1,4 +1,5 @@
 .agent_id
+.agent_key
 openapi.json
 v-installator.py
 send_mach_info.py
