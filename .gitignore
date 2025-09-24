@@ -3,3 +3,5 @@ openapi.json
 v-installator.py
 send_mach_info.py
 __pycache__
+venv*
+.venv*
