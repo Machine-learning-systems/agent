@@ -11,7 +11,7 @@ from typing import List, Optional
 
 @dataclass
 class Settings:
-    image: str = "grigoriybased/gpunix-pytorch:latest"
+    image: str = "grigoriybased/gpugo-pytorch:latest"
     name_prefix: str = "jsg"
     ssh_port_base: int = 42200   # SSH порт = 422XX
     jup_port_base: int = 42800   # Jupyter порт = 428XX
