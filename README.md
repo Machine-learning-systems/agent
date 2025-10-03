@@ -2,20 +2,21 @@
 
 Интеллектуальный агент для подключения к GpuGo
 
-
 # Требования
+
 - Ubuntu 22.04 LTS или 24.04 LTS
 - Широкополосный интернет
 - NVIDIA GPU с установленными драйверами
 
 ## Установка зависимостей
 
-### Установка Python 
+### Установка Python
 
 ```bash
 sudo apt update
 sudo apt install -y git
 wget -qO- https://astral.sh/uv/install.sh | sudo sh
+wget -qO- https://astral.sh/uv/install.sh | sh
 ```
 
 ### Установка Docker
@@ -23,12 +24,14 @@ wget -qO- https://astral.sh/uv/install.sh | sudo sh
 Рекомендуемый способ — через официальный репозиторий Docker.
 https://docs.docker.com/engine/install/ubuntu (здесь можно ознакомиться с инструкцией подробнее)
 
-1) Удалить старые пакеты (если были):
+1. Удалить старые пакеты (если были):
+
 ```bash
 for pkg in docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc; do sudo apt-get remove $pkg; done
 ```
 
-2) Установка зависимостей:
+2. Установка зависимостей:
+
 ```bash
 # Add Docker's official GPG key:
 sudo apt-get update
@@ -45,19 +48,22 @@ echo \
 sudo apt-get update
 ```
 
-3) Установка Docker Engine:
+3. Установка Docker Engine:
+
 ```bash
 sudo apt-get install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 ```
 
-4) Запуск и доступ без sudo:
+4. Запуск и доступ без sudo:
+
 ```bash
 sudo systemctl enable --now docker
 sudo usermod -aG docker $USER
 newgrp docker
 ```
 
-5) Проверка:
+5. Проверка:
+
 ```bash
 docker --version
 docker run --rm hello-world
@@ -77,10 +83,10 @@ Distribution: Ubuntu
 Version: 22.04 или 24.04
 Installer Type: deb (local)
 
-
 ### NVIDIA Container Toolkit
 
 Примечание: на Ubuntu 24.04 официальный список NVIDIA для libnvidia-container может отсутствовать. Используйте список для Ubuntu 22.04 (jammy) — он совместим с 24.04.
+
 ```bash
 # 1) Ключ
 sudo apt update
@@ -101,7 +107,9 @@ sudo apt install -y nvidia-container-toolkit
 sudo nvidia-ctk runtime configure --runtime=docker || true
 sudo systemctl restart docker
 ```
+
 Если `nvidia-ctk` недоступен, добавьте runtime вручную:
+
 ```bash
 sudo tee /etc/docker/daemon.json >/dev/null <<'JSON'
 {
@@ -115,12 +123,16 @@ sudo tee /etc/docker/daemon.json >/dev/null <<'JSON'
 JSON
 sudo systemctl restart docker
 ```
+
 Установка драйверов NVIDIA (если не установлены):
+
 ```bash
 sudo ubuntu-drivers autoinstall
 sudo reboot
 ```
+
 Проверка GPU в контейнере:
+
 ```bash
 # Современный способ
 docker run --rm --gpus all nvidia/cuda:12.6.2-base-ubuntu24.04 nvidia-smi
@@ -132,32 +144,60 @@ docker run --rm --runtime=nvidia nvidia/cuda:12.6.2-base-ubuntu24.04 nvidia-smi
 docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
 ```
 
-### Быстрый старт (Ubuntu 24.04)
+### Скачивание репозитория
 
 1. Клонирование репозитория
+
 ```bash
 git clone https://github.com/Machine-learning-systems/agent.git
 ```
 
 2. Переход в директорию проекта
+
 ```bash
 cd agent
 ```
 
-3. Запуск (должен быть установлен uv из шага "Установка зависимостей > Установка Python")
+### Запуск ТЕСТОВЫЙ (не обязательный)
+
+Запуск (должен быть установлен uv из шага "Установка зависимостей > Установка Python")
+
 ```bash
 uv run agent.py <YOUR_SECRET_KEY>
 ```
 
-6. Запуск агента в фоне через nohup
+### Запуск ПРОДАКШН
+
+Для продакшн нужно использовать скрипт agent-manager.sh
+
+Для начала нужно разрешить его выполнение:
+
 ```bash
-nohup uv run agent.py <YOUR_SECRET_KEY> > agent.log 2>&1 &
+chmod +x agent-manager.sh
 ```
 
-Проверка логов:
+Варианты использования:
+
 ```bash
-tail -f agent.log
+# Установка(эта же команда сразу запускает его, не рекомендуется выполнять больше одного раза)
+./agent-manager.sh install <YOUR_SECRET_KEY>
+
+# Запуск агента
+./agent-manager.sh start
+
+# Остановка агента
+./agent-manager.sh stop
+
+# Проверка статуса агента
+./agent-manager.sh status
+
+# Удаление агента (остановит и удалит службу)
+./agent-manager.sh uninstall
+
+# Просмотр логов агента
+./agent-manager.sh logs
 ```
 
 ---
+
 Репозиторий: https://github.com/Machine-learning-systems/agent
