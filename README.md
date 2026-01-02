@@ -1,117 +1,217 @@
 # GpuGo Agent
 
-Интеллектуальный агент для подключения к GpuGo
+Агент для подключения GPU-машин к платформе GpuGo. Управляет Docker-контейнерами, собирает информацию о железе, общается с API сервером.
 
-# Требования
+Версия 2.0 — полностью переписанная архитектура с CLI, TUI dashboard и нормальным логированием.
 
-- Ubuntu 22.04 LTS или 24.04 LTS
-- Широкополосный интернет
-- NVIDIA GPU с установленными драйверами
+## Что нового в v2.0
 
-## Установка зависимостей
+- Модульная архитектура вместо монолита
+- CLI через `gpugo` команду
+- TUI dashboard для мониторинга (Textual)
+- Логирование через loguru вместо print
+- Pydantic модели для валидации
+- Поддержка всех сервисов: SSH, Jupyter, code-server, ComfyUI
 
-### Установка Python
+## Требования
+
+- Ubuntu 22.04 / 24.04 LTS
+- Python 3.12+
+- Docker с NVIDIA Container Toolkit
+- NVIDIA GPU с драйверами
+
+## Быстрый старт
 
 ```bash
-sudo apt update
-sudo apt install -y git
-wget -qO- https://astral.sh/uv/install.sh | sudo sh
-wget -qO- https://astral.sh/uv/install.sh | sh
+git clone https://github.com/Machine-learning-systems/agent.git
+cd agent
+uv sync
+uv run gpugo run <YOUR_SECRET_KEY>
 ```
 
-### Установка Docker
-
-Рекомендуемый способ — через официальный репозиторий Docker.
-https://docs.docker.com/engine/install/ubuntu (здесь можно ознакомиться с инструкцией подробнее)
-
-1. Удалить старые пакеты (если были):
+Или через systemd (рекомендуется для production):
 
 ```bash
-for pkg in docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc; do sudo apt-get remove $pkg; done
+chmod +x agent-manager.sh
+./agent-manager.sh install <YOUR_SECRET_KEY>
 ```
 
-2. Установка зависимостей:
+## CLI команды
+
+После установки доступна команда `gpugo`:
 
 ```bash
-# Add Docker's official GPG key:
+# Запуск агента
+gpugo run <SECRET_KEY>
+gpugo run <SECRET_KEY> --debug          # с debug логами
+gpugo run <SECRET_KEY> --log agent.log  # логи в файл
+
+# TUI dashboard — удобно смотреть что происходит
+gpugo dashboard
+
+# Управление контейнерами
+gpugo containers list                   # список
+gpugo containers stop task_123          # остановить конкретный
+gpugo containers logs task_123          # логи контейнера
+
+# Статус
+gpugo status
+gpugo version
+```
+
+## TUI Dashboard
+
+Запускается через `gpugo dashboard`. Показывает:
+
+- Статус агента и uptime
+- Загрузку CPU/RAM
+- GPU мониторинг (температура, память, загрузка)
+- Список контейнеров с их статусами
+- Логи в реальном времени
+
+Горячие клавиши:
+- `r` — обновить
+- `s` — остановить выбранный контейнер
+- `d` — удалить контейнер
+- `l` — показать логи контейнера
+- `q` — выход
+
+## Конфигурация
+
+Настройки лежат в `config.yaml`:
+
+```yaml
+image:
+  prefix: jsg
+  default: jupyter
+
+ports:
+  ssh_base: 42200
+  jupyter_base: 42800
+  code_server_base: 48000
+  comfyui_base: 49000
+
+container:
+  shm_size: 16g
+  ulimit_stack: 67108864
+  restart_policy: unless-stopped
+
+nvidia:
+  capabilities: compute,utility
+  visible_devices: all
+
+api:
+  base_url: https://api.gpugo.ru
+  heartbeat_interval: 300
+```
+
+## Структура проекта
+
+```
+agent/
+├── core/
+│   ├── api/           # HTTP клиент для API
+│   ├── cli/           # CLI и TUI
+│   │   ├── main.py    # точка входа
+│   │   └── tui/       # Textual dashboard
+│   ├── models/        # Pydantic модели
+│   ├── services/      # Бизнес-логика
+│   │   ├── agent.py   # главный класс
+│   │   ├── container.py
+│   │   ├── hardware.py
+│   │   └── handlers.py
+│   └── utils/         # логирование и прочее
+├── config.yaml
+├── pyproject.toml
+└── agent-manager.sh   # systemd wrapper
+```
+
+## Управление через systemd
+
+```bash
+./agent-manager.sh install <SECRET_KEY>  # установить и запустить
+./agent-manager.sh start                  # запустить
+./agent-manager.sh stop                   # остановить
+./agent-manager.sh restart                # перезапустить
+./agent-manager.sh status                 # статус
+./agent-manager.sh logs                   # логи (follow)
+./agent-manager.sh uninstall              # удалить службу
+```
+
+---
+
+## Установка зависимостей (если с нуля)
+
+### Python и uv
+
+```bash
+sudo apt update && sudo apt install -y git curl
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+### Docker
+
+Подробно: https://docs.docker.com/engine/install/ubuntu
+
+Коротко:
+
+```bash
+# удалить старое если есть
+for pkg in docker.io docker-doc docker-compose podman-docker containerd runc; do
+  sudo apt-get remove -y $pkg 2>/dev/null
+done
+
+# добавить репозиторий
 sudo apt-get update
-sudo apt-get install ca-certificates curl
+sudo apt-get install -y ca-certificates curl
 sudo install -m 0755 -d /etc/apt/keyrings
 sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
 sudo chmod a+r /etc/apt/keyrings/docker.asc
 
-# Add the repository to Apt sources:
-echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
-  $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}") stable" | \
-  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}") stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# установить
 sudo apt-get update
-```
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
-3. Установка Docker Engine:
-
-```bash
-sudo apt-get install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-```
-
-4. Запуск и доступ без sudo:
-
-```bash
+# настроить
 sudo systemctl enable --now docker
 sudo usermod -aG docker $USER
 newgrp docker
-```
 
-5. Проверка:
-
-```bash
-docker --version
+# проверить
 docker run --rm hello-world
 ```
 
-Если Вы получили вывод "Hello from Docker! ...", значит установка прошла успешно.
-
-### NVIDIA Cuda Toolkit
-
-Требуется перейти по ссылке и выбрать подходящие параметры для скачивания.
-
-https://developer.nvidia.com/cuda-downloads
-
-Operating System: Linux
-Architecture: x86_64
-Distribution: Ubuntu
-Version: 22.04 или 24.04
-Installer Type: deb (local)
-
 ### NVIDIA Container Toolkit
 
-Примечание: на Ubuntu 24.04 официальный список NVIDIA для libnvidia-container может отсутствовать. Используйте список для Ubuntu 22.04 (jammy) — он совместим с 24.04.
+Нужен для запуска контейнеров с GPU.
 
 ```bash
-# 1) Ключ
-sudo apt update
-sudo apt install -y ca-certificates curl gnupg
-sudo install -m 0755 -d /usr/share/keyrings
+# ключ
 curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
   sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit.gpg
 
-# 2) Репозиторий (jammy, совместим с 24.04)
+# репозиторий (ubuntu22.04 работает и на 24.04)
 distribution=ubuntu22.04
 curl -fsSL https://nvidia.github.io/libnvidia-container/$distribution/libnvidia-container.list | \
   sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit.gpg] https://#g' | \
   sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
 
-# 3) Установка и настройка
+# установить
 sudo apt update
 sudo apt install -y nvidia-container-toolkit
-sudo nvidia-ctk runtime configure --runtime=docker || true
+sudo nvidia-ctk runtime configure --runtime=docker
 sudo systemctl restart docker
+
+# проверить
+docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
 ```
 
-Если `nvidia-ctk` недоступен, добавьте runtime вручную:
+Если `nvidia-ctk` не работает, можно вручную:
 
 ```bash
-sudo tee /etc/docker/daemon.json >/dev/null <<'JSON'
+sudo tee /etc/docker/daemon.json <<EOF
 {
   "runtimes": {
     "nvidia": {
@@ -120,83 +220,40 @@ sudo tee /etc/docker/daemon.json >/dev/null <<'JSON'
     }
   }
 }
-JSON
+EOF
 sudo systemctl restart docker
 ```
 
-Установка драйверов NVIDIA (если не установлены):
+### Драйверы NVIDIA
+
+Если ещё не установлены:
 
 ```bash
 sudo ubuntu-drivers autoinstall
 sudo reboot
 ```
 
-Проверка GPU в контейнере:
+---
+
+## Разработка
 
 ```bash
-# Современный способ
-docker run --rm --gpus all nvidia/cuda:12.6.2-base-ubuntu24.04 nvidia-smi
+# установить зависимости
+uv sync
 
-# Способ, совместимый с --runtime=nvidia
-docker run --rm --runtime=nvidia nvidia/cuda:12.6.2-base-ubuntu24.04 nvidia-smi
+# запустить линтер
+ruff check core/
 
-# Если 24.04 тег недоступен, используйте 22.04
-docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
+# форматирование
+ruff format core/
+
+# запустить агента локально
+uv run gpugo run <SECRET_KEY> --debug
 ```
 
-### Скачивание репозитория
+## Лицензия
 
-1. Клонирование репозитория
-
-```bash
-git clone https://github.com/Machine-learning-systems/agent.git
-```
-
-2. Переход в директорию проекта
-
-```bash
-cd agent
-```
-
-### Запуск ТЕСТОВЫЙ (не обязательный)
-
-Запуск (должен быть установлен uv из шага "Установка зависимостей > Установка Python")
-
-```bash
-uv run agent.py <YOUR_SECRET_KEY>
-```
-
-### Запуск ПРОДАКШН
-
-Для продакшн нужно использовать скрипт agent-manager.sh
-
-Для начала нужно разрешить его выполнение:
-
-```bash
-chmod +x agent-manager.sh
-```
-
-Варианты использования:
-
-```bash
-# Установка(эта же команда сразу запускает его, не рекомендуется выполнять больше одного раза)
-./agent-manager.sh install <YOUR_SECRET_KEY>
-
-# Запуск агента
-./agent-manager.sh start
-
-# Остановка агента
-./agent-manager.sh stop
-
-# Проверка статуса агента
-./agent-manager.sh status
-
-# Удаление агента (остановит и удалит службу)
-./agent-manager.sh uninstall
-
-# Просмотр логов агента
-./agent-manager.sh logs
-```
+MIT
 
 ---
 

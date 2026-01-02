@@ -1,0 +1,28 @@
+image:
+  prefix: jsg
+  default: jupyter
+
+ports:
+  ssh_base: 42200
+  jupyter_base: 42800
+  code_server_base: 48000
+  comfyui_base: 49000
+
+debug:
+  ssh: 2222
+  jupyter: 8888
+  code_server: 8080
+  comfyui: 9000
+
+container:
+  shm_size: 16g
+  ulimit_stack: 67108864
+  restart_policy: unless-stopped
+
+nvidia:
+  capabilities: compute,utility
+  visible_devices: all
+
+api:
+  base_url: https://api.gpugo.ru
+  heartbeat_interval: 300
