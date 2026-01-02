@@ -100,20 +100,6 @@ class Task(BaseModel):
     task_data: TaskData = Field(default_factory=TaskData)
     container_info: ContainerInfo = Field(default_factory=ContainerInfo)
 
-    @field_validator("task_data", mode="before")
-    @classmethod
-    def parse_task_data(cls, v: Any) -> Any:
-        if isinstance(v, dict):
-            return TaskData.model_validate(v)
-        return v
-
-    @field_validator("container_info", mode="before")
-    @classmethod
-    def parse_container_info(cls, v: Any) -> Any:
-        if isinstance(v, dict):
-            return ContainerInfo.model_validate(v)
-        return v
-
 
 class TaskResult(BaseModel):
     status: Literal["running", "completed", "failed"]

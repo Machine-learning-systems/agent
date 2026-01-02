@@ -33,21 +33,19 @@ class ContainerManager:
             args, check=check, capture_output=capture_output, text=True
         )
 
-    def _exists(self, name: str) -> bool:
-        out = self._run(
-            ["docker", "ps", "-a", "--format", "{{.Names}}"],
-            capture_output=True,
-            quiet=True,
-        ).stdout.splitlines()
+    def _container_state(self, name: str, include_stopped: bool = True) -> bool:
+        """Check if container exists (include_stopped=True) or is running (include_stopped=False)."""
+        args = ["docker", "ps", "--format", "{{.Names}}"]
+        if include_stopped:
+            args.insert(2, "-a")
+        out = self._run(args, capture_output=True, quiet=True).stdout.splitlines()
         return name in out
 
+    def _exists(self, name: str) -> bool:
+        return self._container_state(name, include_stopped=True)
+
     def _running(self, name: str) -> bool:
-        out = self._run(
-            ["docker", "ps", "--format", "{{.Names}}"],
-            capture_output=True,
-            quiet=True,
-        ).stdout.splitlines()
-        return name in out
+        return self._container_state(name, include_stopped=False)
 
     def _ensure_image(self, image: str) -> bool:
         cp = self._run(
@@ -130,30 +128,34 @@ class ContainerManager:
         work_vol = f"{name}-work"
         self._run(["docker", "volume", "create", work_vol], quiet=True)
 
-        args = self._build_docker_command(
-            name=name,
-            image=image,
-            port_mapping=port_mapping,
-            password=password,
-            token=token or password,
-            gpus=gpus,
-            cpuset_cpus=cpuset_cpus,
-            memory_gb=memory_gb,
-            storage_gb=storage_gb,
-            shm_size_gb=shm_size_gb,
-            work_vol=work_vol,
-            services=services,
-        )
+        try:
+            args = self._build_docker_command(
+                name=name,
+                image=image,
+                port_mapping=port_mapping,
+                password=password,
+                token=token or password,
+                gpus=gpus,
+                cpuset_cpus=cpuset_cpus,
+                memory_gb=memory_gb,
+                storage_gb=storage_gb,
+                shm_size_gb=shm_size_gb,
+                work_vol=work_vol,
+                services=services,
+            )
 
-        result = self._run(args, capture_output=True)
-        container_id = result.stdout.strip()
+            result = self._run(args, capture_output=True)
+            container_id = result.stdout.strip()
 
-        logger.info(f" Container started: {name}")
-        return ContainerStartResult(
-            container_id=container_id,
-            container_name=name,
-            port_mapping=port_mapping,
-        )
+            logger.info(f" Container started: {name}")
+            return ContainerStartResult(
+                container_id=container_id,
+                container_name=name,
+                port_mapping=port_mapping,
+            )
+        except Exception:
+            self.remove_volume(work_vol)
+            raise
 
     def _build_docker_command(
         self,
@@ -277,9 +279,15 @@ class ContainerManager:
             else:
                 logger.info(f" Not found: {name}")
 
-    def stop_by_id(self, container_id: str) -> bool:
+    def _docker_container_op(
+        self, operation: str, container_id: str, ok_if_missing: bool = False
+    ) -> bool:
+        """Execute docker operation (stop/rm/restart) on container."""
+        if ok_if_missing and not self._exists(container_id):
+            return True
+
         cp = self._run(
-            ["docker", "stop", container_id],
+            ["docker", operation, container_id],
             check=False,
             capture_output=True,
             quiet=True,
@@ -287,42 +295,18 @@ class ContainerManager:
         if cp.returncode == 0:
             return True
 
-        err_out = f"{cp.stderr or ''}{cp.stdout or ''}"
-        if "No such container" in err_out or "is not running" in err_out:
-            return True
-
-        logger.error(f" docker stop failed for {container_id}: {err_out.strip()}")
+        err_out = f"{cp.stderr or ''}{cp.stdout or ''}".strip()
+        logger.error(f" docker {operation} failed for {container_id}: {err_out}")
         return False
+
+    def stop_by_id(self, container_id: str) -> bool:
+        return self._docker_container_op("stop", container_id, ok_if_missing=True)
 
     def remove_by_id(self, container_id: str) -> bool:
-        cp = self._run(
-            ["docker", "rm", container_id],
-            check=False,
-            capture_output=True,
-            quiet=True,
-        )
-        if cp.returncode == 0:
-            return True
-
-        err_out = f"{cp.stderr or ''}{cp.stdout or ''}"
-        if "No such container" in err_out:
-            return True
-
-        logger.error(f" docker rm failed for {container_id}: {err_out.strip()}")
-        return False
+        return self._docker_container_op("rm", container_id, ok_if_missing=True)
 
     def restart_by_id(self, container_id: str) -> bool:
-        cp = self._run(
-            ["docker", "restart", container_id],
-            check=False,
-            capture_output=True,
-            quiet=True,
-        )
-        if cp.returncode == 0:
-            return True
-
-        logger.error(f" docker restart failed: {cp.stderr or cp.stdout}")
-        return False
+        return self._docker_container_op("restart", container_id, ok_if_missing=False)
 
     def list_containers(self, prefix: str = "task_") -> list[dict]:
         result = self._run(
@@ -523,7 +507,12 @@ class ContainerManager:
         for volume in volumes:
             # Extract container name from volume name (task_123-work -> task_123)
             container_name = volume.rsplit("-work", 1)[0]
-            if container_name not in containers and self.remove_volume(volume):
+            # Re-check container existence to avoid race condition
+            if (
+                container_name not in containers
+                and not self._exists(container_name)
+                and self.remove_volume(volume)
+            ):
                 removed += 1
 
         logger.info(f" Removed {removed} orphaned volumes")

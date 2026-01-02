@@ -38,7 +38,14 @@ class NvidiaConfig(BaseModel):
 
 class ApiConfig(BaseModel):
     base_url: str = "https://api.gpugo.ru"
-    heartbeat_interval: int = 300
+    heartbeat_interval: int = 60
+
+
+class MetricsConfig(BaseModel):
+    """Container metrics collection configuration."""
+
+    enabled: bool = True
+    container_prefix: str = "task_"
 
 
 class Config(BaseModel):
@@ -48,9 +55,10 @@ class Config(BaseModel):
     container: ContainerConfig = Field(default_factory=ContainerConfig)
     nvidia: NvidiaConfig = Field(default_factory=NvidiaConfig)
     api: ApiConfig = Field(default_factory=ApiConfig)
+    metrics: MetricsConfig = Field(default_factory=MetricsConfig)
 
     @classmethod
-    def load(cls, path: Path | str = "config.yaml") -> Config:
+    def load(cls, path: Path | str = "config.yaml") -> "Config":
         path = Path(path)
         if path.exists():
             with path.open() as f:

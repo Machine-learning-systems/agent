@@ -12,6 +12,8 @@
 - Логирование через loguru вместо print
 - Pydantic модели для валидации
 - Поддержка всех сервисов: SSH, Jupyter, code-server, ComfyUI
+- **Сбор метрик GPU по контейнерам** — видно сколько памяти и вычислений жрёт каждый контейнер
+- Метрики отправляются на сервер вместе с heartbeat
 
 ## Требования
 
@@ -76,6 +78,20 @@ gpugo version
 - `l` — показать логи контейнера
 - `q` — выход
 
+## Метрики контейнеров
+
+Агент собирает детальную статистику по каждому запущенному контейнеру:
+
+- Какие GPU использует контейнер
+- Сколько видеопамяти занято (в байтах и процентах)
+- Загрузка GPU (SM utilization)
+- Загрузка CPU процессами контейнера
+- Количество процессов
+
+Метрики собираются через [nvitop](https://github.com/XuehaiPan/nvitop) — он умеет маппить процессы на контейнеры через `docker top`. Работает только если есть GPU.
+
+Данные отправляются на сервер с каждым heartbeat (раз в минуту по умолчанию).
+
 ## Конфигурация
 
 Настройки лежат в `config.yaml`:
@@ -102,7 +118,11 @@ nvidia:
 
 api:
   base_url: https://api.gpugo.ru
-  heartbeat_interval: 300
+  heartbeat_interval: 60
+
+metrics:
+  enabled: true
+  container_prefix: task_
 ```
 
 ## Структура проекта
@@ -110,20 +130,25 @@ api:
 ```
 agent/
 ├── core/
-│   ├── api/           # HTTP клиент для API
-│   ├── cli/           # CLI и TUI
-│   │   ├── main.py    # точка входа
-│   │   └── tui/       # Textual dashboard
-│   ├── models/        # Pydantic модели
-│   ├── services/      # Бизнес-логика
-│   │   ├── agent.py   # главный класс
-│   │   ├── container.py
+│   ├── api/              # HTTP клиент для API
+│   ├── cli/              # CLI и TUI
+│   │   ├── main.py       # точка входа
+│   │   └── tui/          # Textual dashboard
+│   ├── models/           # Pydantic модели
+│   │   ├── config.py
 │   │   ├── hardware.py
-│   │   └── handlers.py
-│   └── utils/         # логирование и прочее
+│   │   ├── metrics.py    # модели метрик контейнеров
+│   │   └── task.py
+│   ├── services/         # Бизнес-логика
+│   │   ├── agent.py      # главный класс
+│   │   ├── container.py
+│   │   ├── handlers.py
+│   │   ├── hardware.py
+│   │   └── metrics_collector.py  # сбор GPU метрик
+│   └── utils/            # логирование и прочее
 ├── config.yaml
 ├── pyproject.toml
-└── agent-manager.sh   # systemd wrapper
+└── agent-manager.sh      # systemd wrapper
 ```
 
 ## Управление через systemd

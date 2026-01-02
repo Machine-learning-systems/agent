@@ -13,6 +13,14 @@ class TaskHandler(ABC):
     def handle(self, task: Task) -> TaskResult:
         pass
 
+    def _get_container_ids(self, task: Task) -> tuple[str | None, str | None]:
+        """Get container_id and container_name from task."""
+        container_id = task.task_data.container_id or task.container_info.container_id
+        container_name = (
+            task.task_data.container_name or task.container_info.container_name
+        )
+        return container_id, container_name
+
 
 class StartHandler(TaskHandler):
     def handle(self, task: Task) -> TaskResult:
@@ -53,6 +61,14 @@ class StartHandler(TaskHandler):
                 status="failed",
                 container_name=container_name,
                 error_message="port_mapping or ssh_port required",
+            )
+
+        invalid_ports = [p for p in port_mapping if not 1 <= p <= 65535]
+        if invalid_ports:
+            return TaskResult(
+                status="failed",
+                container_name=container_name,
+                error_message=f"Invalid ports: {invalid_ports}",
             )
 
         try:
@@ -109,10 +125,7 @@ class StartHandler(TaskHandler):
 
 class StopHandler(TaskHandler):
     def handle(self, task: Task) -> TaskResult:
-        container_id = task.task_data.container_id or task.container_info.container_id
-        container_name = (
-            task.task_data.container_name or task.container_info.container_name
-        )
+        container_id, container_name = self._get_container_ids(task)
 
         if not container_id:
             return TaskResult(
@@ -133,10 +146,7 @@ class StopHandler(TaskHandler):
 
 class StopRemoveHandler(TaskHandler):
     def handle(self, task: Task) -> TaskResult:
-        container_id = task.task_data.container_id or task.container_info.container_id
-        container_name = (
-            task.task_data.container_name or task.container_info.container_name
-        )
+        container_id, container_name = self._get_container_ids(task)
 
         if not container_id:
             return TaskResult(
@@ -164,10 +174,7 @@ class StopRemoveHandler(TaskHandler):
 
 class RestartHandler(TaskHandler):
     def handle(self, task: Task) -> TaskResult:
-        container_id = task.task_data.container_id or task.container_info.container_id
-        container_name = (
-            task.task_data.container_name or task.container_info.container_name
-        )
+        container_id, container_name = self._get_container_ids(task)
 
         if not container_id:
             return TaskResult(

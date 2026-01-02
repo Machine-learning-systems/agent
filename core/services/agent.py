@@ -9,6 +9,7 @@ from core.models.task import Task, TaskResult
 from core.services.container import ContainerManager
 from core.services.handlers import TaskHandlerRegistry
 from core.services.hardware import HardwareCollector
+from core.services.metrics_collector import ContainerMetricsCollector
 
 
 class Agent:
@@ -31,6 +32,10 @@ class Agent:
         )
         self.container_manager = ContainerManager(self.config)
         self.hardware = HardwareCollector()
+        self.metrics_collector = ContainerMetricsCollector(
+            container_manager=self.container_manager,
+            prefix="task_",
+        )
 
         self._load_agent_id()
 
@@ -43,7 +48,10 @@ class Agent:
 
     def _save_agent_id(self, agent_id: str) -> None:
         """Save agent_id to file."""
-        self.agent_id_file.write_text(agent_id)
+        try:
+            self.agent_id_file.write_text(agent_id)
+        except OSError as e:
+            logger.warning(f"Failed to save agent_id to file: {e}")
         self.agent_id = agent_id
         self.api_client.agent_id = agent_id
         logger.info(f"Saved agent_id: {agent_id}")
@@ -73,6 +81,10 @@ class Agent:
         success = self.api_client.send_init_data(system_data)
         if not success:
             logger.warning("Failed to send init data, continuing...")
+
+        # Initialize container metrics collector
+        if not self.metrics_collector.initialize():
+            logger.warning("Container metrics disabled (no GPU)")
 
         logger.info("Agent initialized successfully")
         return True
@@ -111,7 +123,8 @@ class Agent:
 
         self.api_client.start_polling(self.process_task)
 
-        heartbeat_interval = self.config.api.heartbeat_interval
+        # Heartbeat every 60 seconds with container metrics
+        heartbeat_interval = 60
         heartbeat_counter = 0
         check_interval = 60
 
@@ -122,7 +135,23 @@ class Agent:
 
                 if heartbeat_counter >= heartbeat_interval:
                     monitoring_data = self.hardware.collect_monitoring_data()
-                    self.api_client.send_heartbeat(monitoring_data.model_dump())
+
+                    # Collect container metrics if available
+                    container_metrics = None
+                    if self.metrics_collector.available:
+                        try:
+                            report = self.metrics_collector.collect()
+                            container_metrics = report.model_dump()
+                        except Exception as e:
+                            logger.debug(f"Container metrics failed: {e}")
+
+                    # Extended heartbeat payload
+                    heartbeat_payload = {
+                        **monitoring_data.model_dump(),
+                        "container_metrics": container_metrics,
+                    }
+
+                    self.api_client.send_heartbeat(heartbeat_payload)
                     heartbeat_counter = 0
                     logger.debug("Heartbeat sent")
 

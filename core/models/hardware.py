@@ -20,22 +20,6 @@ class GPUInfo(BaseModel):
     max_cuda_version: str | None = None
 
 
-class DiskInfo(BaseModel):
-    """Disk information model."""
-
-    model: str = "Unknown"
-    type: str = "Unknown"
-    size_gb: float | None = None
-
-
-class NetworkInfo(BaseModel):
-    """Network information model."""
-
-    up_mbps: int | None = None
-    down_mbps: int | None = None
-    interface: str = "Unknown"
-
-
 class SystemInfo(BaseModel):
     """Complete system information."""
 
@@ -46,7 +30,6 @@ class SystemInfo(BaseModel):
     location: str = "Unknown"
     cpus: list[CPUInfo] = []
     gpus: list[GPUInfo] = []
-    disks: list[DiskInfo] = []
 
 
 class MonitoringData(BaseModel):

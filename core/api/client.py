@@ -32,7 +32,7 @@ class APIClient:
             timeout=httpx.Timeout(connect=5.0, read=timeout, write=5.0, pool=5.0),
             headers={"Content-Type": "application/json"},
         )
-        self._polling_active = False
+        self._stop_event = threading.Event()
         self._polling_thread: threading.Thread | None = None
 
     def _get_headers(self) -> dict[str, str]:
@@ -102,7 +102,7 @@ class APIClient:
                 result = self._parse_json_response(response)
                 if result is None:
                     continue
-                return result.get("exception") == 0
+                return result.get("exception") in (None, 0)
             except httpx.HTTPStatusError as e:
                 logger.error(
                     f"Init data HTTP error {e.response.status_code}: {e.response.text}"
@@ -135,7 +135,7 @@ class APIClient:
             )
             response.raise_for_status()
             result = self._parse_json_response(response)
-            return result.get("exception") == 0 if result else False
+            return result.get("exception") in (None, 0) if result else False
         except httpx.HTTPStatusError as e:
             logger.warning(f"Heartbeat HTTP error {e.response.status_code}")
         except httpx.TimeoutException:
@@ -156,7 +156,7 @@ class APIClient:
             )
             response.raise_for_status()
             json_result = self._parse_json_response(response)
-            return json_result.get("exception") == 0 if json_result else False
+            return json_result.get("exception") in (None, 0) if json_result else False
         except httpx.HTTPStatusError as e:
             logger.error(
                 f"Task status HTTP error {e.response.status_code}: {e.response.text}"
@@ -194,7 +194,7 @@ class APIClient:
         consecutive_errors = 0
         max_errors = 5
 
-        while self._polling_active:
+        while not self._stop_event.is_set():
             try:
                 response = self._client.post(
                     f"/v1/agents/{self.agent_id}/tasks/pull",
@@ -205,7 +205,8 @@ class APIClient:
                 json_result = self._parse_json_response(response)
                 if json_result is None:
                     consecutive_errors += 1
-                    time.sleep(10)
+                    if self._stop_event.wait(timeout=10):
+                        break
                     continue
 
                 data = json_result.get("data", {})
@@ -238,11 +239,16 @@ class APIClient:
             wait_time = 60 if consecutive_errors >= max_errors else 10
             if consecutive_errors >= max_errors:
                 logger.warning(f"Too many errors ({consecutive_errors}), backing off")
-            time.sleep(wait_time)
+            if self._stop_event.wait(timeout=wait_time):
+                break
 
     def start_polling(self, callback: Callable[[Task], TaskResult | None]) -> None:
         """Start polling in background thread."""
-        self._polling_active = True
+        if self._polling_thread and self._polling_thread.is_alive():
+            logger.warning("Polling thread already running")
+            return
+
+        self._stop_event.clear()
         self._polling_thread = threading.Thread(
             target=self.poll_for_tasks,
             args=(callback,),
@@ -253,9 +259,10 @@ class APIClient:
 
     def stop_polling(self) -> None:
         """Stop polling."""
-        self._polling_active = False
+        self._stop_event.set()
         if self._polling_thread and self._polling_thread.is_alive():
             self._polling_thread.join(timeout=5)
+        self._polling_thread = None
         logger.info("Polling stopped")
 
     def close(self) -> None:

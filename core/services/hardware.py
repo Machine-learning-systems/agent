@@ -9,6 +9,15 @@ from loguru import logger
 
 from core.models.hardware import CPUInfo, GPUInfo, MonitoringData, SystemInfo
 
+# Optional nvitop import with fallback
+try:
+    from nvitop import Device as NvitopDevice
+
+    NVITOP_AVAILABLE = True
+except ImportError:
+    NVITOP_AVAILABLE = False
+    NvitopDevice = None
+
 
 class HardwareCollector:
     """Collects hardware and system information."""
@@ -16,6 +25,19 @@ class HardwareCollector:
     def __init__(self):
         self._system = platform.system()
         self._cache: dict[str, Any] = {}
+        self._nvitop_devices: list = []
+        self._init_nvitop()
+
+    def _init_nvitop(self) -> None:
+        """Initialize nvitop devices."""
+        if not NVITOP_AVAILABLE:
+            return
+        try:
+            self._nvitop_devices = NvitopDevice.all()
+            if self._nvitop_devices:
+                logger.debug(f"nvitop: {len(self._nvitop_devices)} GPU(s)")
+        except Exception as e:
+            logger.debug(f"nvitop init failed: {e}")
 
     def get_cpu_info(self) -> list[CPUInfo]:
         """Collect CPU information."""
@@ -33,10 +55,34 @@ class HardwareCollector:
             ]
 
     def get_gpu_info(self) -> list[GPUInfo]:
-        """Collect GPU information via nvidia-smi."""
+        """Collect GPU information (nvitop → nvidia-smi fallback)."""
         if "gpu" in self._cache:
             return self._cache["gpu"]
 
+        if self._nvitop_devices:
+            return self._get_gpu_info_nvitop()
+        return self._get_gpu_info_nvidia_smi()
+
+    def _get_gpu_info_nvitop(self) -> list[GPUInfo]:
+        """Get GPU info using nvitop."""
+        gpus = []
+        for device in self._nvitop_devices:
+            try:
+                memory_bytes = device.memory_total() or 0
+                gpus.append(
+                    GPUInfo(
+                        model=device.name() or "Unknown",
+                        vram_gb=memory_bytes // (1024**3),
+                        vendor="NVIDIA",
+                    )
+                )
+            except Exception as e:
+                logger.debug(f"nvitop device {device.index}: {e}")
+        self._cache["gpu"] = gpus
+        return gpus
+
+    def _get_gpu_info_nvidia_smi(self) -> list[GPUInfo]:
+        """Get GPU info using nvidia-smi (fallback)."""
         try:
             result = subprocess.run(
                 [
@@ -129,7 +175,7 @@ class HardwareCollector:
             "cpu_usage": monitoring.cpu_usage,
             "memory_usage": monitoring.memory_usage,
             "gpu_usage": sum(monitoring.gpu_usage.values()) / len(monitoring.gpu_usage)
-            if monitoring.gpu_usage
+            if monitoring.gpu_usage and len(monitoring.gpu_usage) > 0
             else 0,
             "hardware_info": {
                 "cpus": [c.model_dump() for c in info.cpus],
@@ -147,7 +193,24 @@ class HardwareCollector:
         )
 
     def _get_gpu_usage(self) -> dict[str, float]:
-        """Get per-GPU usage."""
+        """Get per-GPU usage (nvitop → nvidia-smi fallback)."""
+        if self._nvitop_devices:
+            return self._get_gpu_usage_nvitop()
+        return self._get_gpu_usage_nvidia_smi()
+
+    def _get_gpu_usage_nvitop(self) -> dict[str, float]:
+        """Get GPU usage using nvitop."""
+        usage = {}
+        for device in self._nvitop_devices:
+            try:
+                util = device.gpu_utilization()
+                usage[f"gpu{device.index}"] = float(util) if util is not None else 0.0
+            except Exception:
+                usage[f"gpu{device.index}"] = 0.0
+        return usage
+
+    def _get_gpu_usage_nvidia_smi(self) -> dict[str, float]:
+        """Get GPU usage using nvidia-smi (fallback)."""
         try:
             result = subprocess.run(
                 [
