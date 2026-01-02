@@ -78,9 +78,14 @@ def containers(
 
     elif action == "stop":
         if name:
-            subprocess.run(["docker", "stop", name])
-            subprocess.run(["docker", "rm", name])
-            logger.info(f"Stopped and removed: {name}")
+            try:
+                subprocess.run(
+                    ["docker", "stop", name], check=True, capture_output=True
+                )
+                subprocess.run(["docker", "rm", name], check=True, capture_output=True)
+                logger.info(f"Stopped and removed: {name}")
+            except subprocess.CalledProcessError as e:
+                logger.error(f"Failed to stop/remove {name}: {e}")
         else:
             from core.services.container import ContainerManager
 
@@ -89,7 +94,12 @@ def containers(
             logger.info("All containers stopped")
 
     elif action == "logs" and name:
-        subprocess.run(["docker", "logs", "-f", "--tail", "100", name])
+        try:
+            subprocess.run(["docker", "logs", "-f", "--tail", "100", name], check=True)
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to get logs for {name}: {e}")
+        except KeyboardInterrupt:
+            pass
 
     else:
         logger.error(f"Unknown action: {action}")
@@ -121,6 +131,20 @@ def status() -> None:
 def version() -> None:
     """Show version information."""
     typer.echo(f"GpuGo Agent v{__version__}")
+
+
+@app.command(name="cleanup-volumes")
+def cleanup_volumes() -> None:
+    """Clean up orphaned Docker volumes."""
+    from loguru import logger
+
+    from core.services.container import ContainerManager
+
+    setup_logging()
+
+    manager = ContainerManager()
+    removed = manager.cleanup_volumes()
+    logger.info(f"Cleanup complete: {removed} volumes removed")
 
 
 def main() -> None:

@@ -1,3 +1,4 @@
+import json
 import threading
 import time
 from collections.abc import Callable
@@ -7,6 +8,10 @@ import httpx
 from loguru import logger
 
 from core.models.task import Task, TaskResult
+
+# Retry configuration
+MAX_RETRIES = 3
+RETRY_BACKOFF = [1, 2, 4]  # seconds
 
 
 class APIClient:
@@ -37,46 +42,85 @@ class APIClient:
             headers["X-Agent-Secret-Key"] = self.secret_key
         return headers
 
-    def confirm_agent(self, data: dict[str, Any]) -> str | None:
-        """Confirm agent and get agent_id."""
+    def _parse_json_response(self, response: httpx.Response) -> dict[str, Any] | None:
+        """Safely parse JSON response."""
         try:
-            response = self._client.post(
-                "/v1/agents/confirm",
-                json=data,
-                headers=self._get_headers(),
-            )
-            response.raise_for_status()
-            result = response.json()
-            data_field = result.get("data", {})
-            return data_field.get("agent_id") or data_field.get("id")
-        except httpx.HTTPStatusError as e:
-            logger.error(
-                f"Confirm agent HTTP error {e.response.status_code}: {e.response.text}"
-            )
-        except httpx.RequestError as e:
-            logger.error(f"Confirm agent request failed: {e}")
+            return response.json()
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON response: {e}")
+            return None
+
+    def confirm_agent(self, data: dict[str, Any]) -> str | None:
+        """Confirm agent and get agent_id with retry logic."""
+        for attempt in range(MAX_RETRIES):
+            try:
+                response = self._client.post(
+                    "/v1/agents/confirm",
+                    json=data,
+                    headers=self._get_headers(),
+                )
+                response.raise_for_status()
+                result = self._parse_json_response(response)
+                if result is None:
+                    continue
+                data_field = result.get("data", {})
+                return data_field.get("agent_id") or data_field.get("id")
+            except httpx.HTTPStatusError as e:
+                logger.error(
+                    f"Confirm agent HTTP error {e.response.status_code}: {e.response.text}"
+                )
+                if e.response.status_code < 500:
+                    return None  # Client error, don't retry
+            except httpx.TimeoutException:
+                logger.warning(
+                    f"Confirm agent timeout (attempt {attempt + 1}/{MAX_RETRIES})"
+                )
+            except httpx.RequestError as e:
+                logger.error(f"Confirm agent request failed: {e}")
+
+            if attempt < MAX_RETRIES - 1:
+                wait_time = RETRY_BACKOFF[attempt]
+                logger.info(f"Retrying in {wait_time}s...")
+                time.sleep(wait_time)
+
         return None
 
     def send_init_data(self, data: dict[str, Any]) -> bool:
-        """Send initialization data to server."""
+        """Send initialization data to server with retry logic."""
         if not self.agent_id:
             logger.error("Agent ID not set")
             return False
-        try:
-            response = self._client.post(
-                f"/v1/agents/{self.agent_id}/init",
-                json=data,
-                headers=self._get_headers(),
-            )
-            response.raise_for_status()
-            result = response.json()
-            return result.get("exception") == 0
-        except httpx.HTTPStatusError as e:
-            logger.error(
-                f"Init data HTTP error {e.response.status_code}: {e.response.text}"
-            )
-        except httpx.RequestError as e:
-            logger.error(f"Init data request failed: {e}")
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                response = self._client.post(
+                    f"/v1/agents/{self.agent_id}/init",
+                    json=data,
+                    headers=self._get_headers(),
+                )
+                response.raise_for_status()
+                result = self._parse_json_response(response)
+                if result is None:
+                    continue
+                return result.get("exception") == 0
+            except httpx.HTTPStatusError as e:
+                logger.error(
+                    f"Init data HTTP error {e.response.status_code}: {e.response.text}"
+                )
+                if e.response.status_code < 500:
+                    return False  # Client error, don't retry
+            except httpx.TimeoutException:
+                logger.warning(
+                    f"Init data timeout (attempt {attempt + 1}/{MAX_RETRIES})"
+                )
+            except httpx.RequestError as e:
+                logger.error(f"Init data request failed: {e}")
+
+            if attempt < MAX_RETRIES - 1:
+                wait_time = RETRY_BACKOFF[attempt]
+                logger.info(f"Retrying in {wait_time}s...")
+                time.sleep(wait_time)
+
         return False
 
     def send_heartbeat(self, monitoring_data: dict[str, Any]) -> bool:
@@ -90,7 +134,10 @@ class APIClient:
                 headers=self._get_headers(),
             )
             response.raise_for_status()
-            return response.json().get("exception") == 0
+            result = self._parse_json_response(response)
+            return result.get("exception") == 0 if result else False
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"Heartbeat HTTP error {e.response.status_code}")
         except httpx.TimeoutException:
             logger.warning("Heartbeat timeout")
         except httpx.RequestError as e:
@@ -108,11 +155,14 @@ class APIClient:
                 headers=self._get_headers(),
             )
             response.raise_for_status()
-            return response.json().get("exception") == 0
+            json_result = self._parse_json_response(response)
+            return json_result.get("exception") == 0 if json_result else False
         except httpx.HTTPStatusError as e:
             logger.error(
                 f"Task status HTTP error {e.response.status_code}: {e.response.text}"
             )
+        except httpx.TimeoutException:
+            logger.error(f"Task status timeout for task {task_id}")
         except httpx.RequestError as e:
             logger.error(f"Task status request failed: {e}")
         return False
@@ -125,12 +175,15 @@ class APIClient:
             response = self._client.post(
                 f"/v1/agents/{self.agent_id}/logs",
                 json={"message": str(message)},
-                headers={"Content-Type": "application/json"},
+                headers=self._get_headers(),
                 timeout=5.0,
             )
             return response.status_code == 200
-        except Exception:
-            return False
+        except httpx.TimeoutException:
+            logger.debug("Log send timeout")
+        except httpx.RequestError as e:
+            logger.debug(f"Log send failed: {e}")
+        return False
 
     def poll_for_tasks(self, callback: Callable[[Task], TaskResult | None]) -> None:
         """Poll for tasks and execute callback."""
@@ -149,7 +202,13 @@ class APIClient:
                     timeout=30.0,
                 )
                 response.raise_for_status()
-                data = response.json().get("data", {})
+                json_result = self._parse_json_response(response)
+                if json_result is None:
+                    consecutive_errors += 1
+                    time.sleep(10)
+                    continue
+
+                data = json_result.get("data", {})
 
                 if data.get("task_id") is not None:
                     task = Task.model_validate({

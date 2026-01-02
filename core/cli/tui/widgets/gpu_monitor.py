@@ -79,6 +79,8 @@ class GPUMonitor(Static):
                 self.gpus = gpus
         except FileNotFoundError:
             self.gpus = []
-        except Exception:
-            pass
+        except subprocess.TimeoutExpired:
+            pass  # Keep previous data on timeout
+        except subprocess.SubprocessError:
+            pass  # Keep previous data on error
         self.refresh()

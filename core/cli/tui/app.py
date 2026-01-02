@@ -184,8 +184,8 @@ class AgentDashboard(App):
         try:
             log_panel = self.query_one("#logs-panel", LogPanel)
             log_panel.add_log(message)
-        except Exception:
-            pass
+        except LookupError:
+            pass  # Widget not yet mounted
 
 
 def run_dashboard(agent_id: str = "", status: str = "offline") -> None:

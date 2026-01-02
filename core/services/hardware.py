@@ -78,8 +78,10 @@ class HardwareCollector:
                 response = httpx.get(url, timeout=5)
                 if response.status_code == 200:
                     return response.text.strip()
-            except Exception:
-                continue
+            except httpx.TimeoutException:
+                logger.debug(f"Timeout getting IP from {url}")
+            except httpx.RequestError as e:
+                logger.debug(f"Failed to get IP from {url}: {e}")
         return None
 
     def get_location(self, ip: str) -> str:
@@ -163,8 +165,12 @@ class HardwareCollector:
                     for i, usage in enumerate(result.stdout.strip().split("\n"))
                     if usage
                 }
-        except Exception:
-            pass
+        except FileNotFoundError:
+            pass  # nvidia-smi not available
+        except subprocess.TimeoutExpired:
+            logger.debug("nvidia-smi timeout during GPU usage check")
+        except (subprocess.SubprocessError, ValueError) as e:
+            logger.debug(f"GPU usage check failed: {e}")
         return {}
 
     def _get_ram_type(self) -> str:
@@ -180,8 +186,13 @@ class HardwareCollector:
             )
             match = re.search(r"Type:\s+(DDR\w*)", result.stdout)
             return match.group(1) if match else "Unknown"
-        except Exception:
-            return "Unknown"
+        except FileNotFoundError:
+            logger.debug("dmidecode not found")
+        except subprocess.TimeoutExpired:
+            logger.debug("dmidecode timed out")
+        except subprocess.SubprocessError as e:
+            logger.debug(f"dmidecode failed: {e}")
+        return "Unknown"
 
     def _get_cpu_linux(self) -> list[CPUInfo]:
         """Get CPU info on Linux via lscpu."""

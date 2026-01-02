@@ -1,5 +1,6 @@
 from typing import Any, Literal
 
+from loguru import logger
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -10,10 +11,13 @@ class ServiceConfig(BaseModel):
     enable_comfyui: bool = False
 
 
+CpuRange = tuple[int, int]
+
+
 class ResourceAllocation(BaseModel):
     gpu_required: int = 0
     gpu_enabled_indices: list[int] | None = None
-    cpu_allocated_ranges: list[tuple[int, int]] | None = None
+    cpu_allocated_ranges: list[CpuRange] | None = None
     ram_allocated_gb: int | None = None
     storage_allocated_gb: int | None = None
 
@@ -45,7 +49,7 @@ class TaskData(BaseModel):
     container_name: str | None = None
     gpu_required: int = 0
     gpu_enabled_indices: list[int] | None = None
-    cpu_allocated_ranges: list[Any] | None = None
+    cpu_allocated_ranges: list[list[int] | tuple[int, int]] | None = None
     ram_allocated_gb: int | None = None
     storage_allocated_gb: int | None = None
     services: ServiceConfig = Field(default_factory=ServiceConfig)
@@ -61,17 +65,21 @@ class TaskData(BaseModel):
 
     @property
     def resources(self) -> ResourceAllocation:
-        ranges = None
+        ranges: list[CpuRange] | None = None
         if self.cpu_allocated_ranges:
             ranges = []
             for r in self.cpu_allocated_ranges:
                 if isinstance(r, (list, tuple)) and len(r) == 2:
-                    ranges.append((int(r[0]), int(r[1])))
+                    try:
+                        ranges.append((int(r[0]), int(r[1])))
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Invalid CPU range {r}: {e}")
+                        continue
 
         return ResourceAllocation(
             gpu_required=self.gpu_required,
             gpu_enabled_indices=self.gpu_enabled_indices,
-            cpu_allocated_ranges=ranges,
+            cpu_allocated_ranges=ranges if ranges else None,
             ram_allocated_gb=self.ram_allocated_gb,
             storage_allocated_gb=self.storage_allocated_gb,
         )

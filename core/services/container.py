@@ -377,8 +377,10 @@ class ContainerManager:
             if result.returncode == 0:
                 logger.info(" Docker permissions OK")
                 return True
-        except Exception:
-            pass
+        except subprocess.TimeoutExpired:
+            logger.warning("Docker permission check timed out")
+        except subprocess.SubprocessError as e:
+            logger.debug(f"Docker permission check failed: {e}")
 
         logger.info(" Fixing Docker permissions...")
         try:
@@ -388,14 +390,18 @@ class ContainerManager:
                 check=True,
             )
             logger.info(f" Added {current_user} to docker group")
-        except Exception as e:
+        except subprocess.CalledProcessError as e:
             logger.warning(f" Failed to add user to docker group: {e}")
+        except FileNotFoundError:
+            logger.warning(" sudo or usermod not found")
 
         try:
             subprocess.run(["sudo", "systemctl", "restart", "docker"], check=True)
             logger.info(" Docker service restarted")
-        except Exception as e:
+        except subprocess.CalledProcessError as e:
             logger.warning(f" Failed to restart Docker: {e}")
+        except FileNotFoundError:
+            logger.warning(" sudo or systemctl not found")
 
         time.sleep(3)
 
@@ -409,8 +415,10 @@ class ContainerManager:
             if result.returncode == 0:
                 logger.info(" Docker permissions fixed")
                 return True
-        except Exception:
-            pass
+        except subprocess.TimeoutExpired:
+            logger.warning("Docker permission re-check timed out")
+        except subprocess.SubprocessError as e:
+            logger.debug(f"Docker permission re-check failed: {e}")
 
         return False
 
@@ -445,15 +453,78 @@ class ContainerManager:
                     if result.returncode == 0:
                         logger.info(" Docker GPU support confirmed with --gpus flag")
                         return True
-                except Exception:
-                    pass
+                except subprocess.TimeoutExpired:
+                    logger.warning("GPU test container timed out")
+                except subprocess.SubprocessError as e:
+                    logger.warning(f"GPU test container failed: {e}")
 
                 logger.warning(
                     "nvidia-container-toolkit found but GPU access not working"
                 )
                 return False
-        except Exception:
-            pass
+        except FileNotFoundError:
+            logger.debug("nvidia-container-cli not found")
+        except subprocess.TimeoutExpired:
+            logger.warning("nvidia-container-cli timed out")
+        except subprocess.SubprocessError as e:
+            logger.warning(f"nvidia-container-cli check failed: {e}")
 
         logger.warning(" Docker GPU support not available")
         return False
+
+    def remove_volume(self, volume_name: str) -> bool:
+        """Remove a Docker volume."""
+        cp = self._run(
+            ["docker", "volume", "rm", volume_name],
+            check=False,
+            capture_output=True,
+            quiet=True,
+        )
+        if cp.returncode == 0:
+            logger.info(f" Volume removed: {volume_name}")
+            return True
+
+        err_out = f"{cp.stderr or ''}{cp.stdout or ''}"
+        if "No such volume" in err_out:
+            return True  # Already removed
+
+        logger.warning(f" Failed to remove volume {volume_name}: {err_out.strip()}")
+        return False
+
+    def cleanup_volumes(self, prefix: str = "task_") -> int:
+        """Remove orphaned volumes for containers that no longer exist."""
+        logger.info(" Cleaning up orphaned volumes...")
+
+        # Get all volumes with the prefix
+        result = self._run(
+            ["docker", "volume", "ls", "--format", "{{.Name}}"],
+            capture_output=True,
+            quiet=True,
+        )
+        volumes = [
+            v
+            for v in result.stdout.strip().split("\n")
+            if v and v.startswith(prefix) and v.endswith("-work")
+        ]
+
+        if not volumes:
+            logger.info(" No orphaned volumes found")
+            return 0
+
+        # Get existing containers
+        containers_result = self._run(
+            ["docker", "ps", "-a", "--format", "{{.Names}}"],
+            capture_output=True,
+            quiet=True,
+        )
+        containers = set(containers_result.stdout.strip().split("\n"))
+
+        removed = 0
+        for volume in volumes:
+            # Extract container name from volume name (task_123-work -> task_123)
+            container_name = volume.rsplit("-work", 1)[0]
+            if container_name not in containers and self.remove_volume(volume):
+                removed += 1
+
+        logger.info(f" Removed {removed} orphaned volumes")
+        return removed
