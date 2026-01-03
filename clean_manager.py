@@ -24,6 +24,7 @@ class Settings:
 class ContainerManager:
     def __init__(self, settings: Settings = Settings()):
         self.s = settings
+        self.gpu_method = None
 
     def _run(self, args: List[str], check: bool = True, capture_output: bool = False, quiet: bool = False) -> subprocess.CompletedProcess:
         if not quiet:
@@ -104,6 +105,85 @@ class ContainerManager:
         if bad:
             raise RuntimeError(f"Порты заняты: {', '.join(bad)}")
 
+    def _detect_gpu_method(self) -> Optional[str]:
+        """
+        Определяет доступный метод GPU через тестовый контейнер.
+        Returns: "gpus" | "runtime" | None
+        """
+        test_image = "nvidia/cuda:12.6.2-base-ubuntu24.04"
+        
+        print("[INFO] Testing GPU support with --gpus flag...")
+        try:
+            result = subprocess.run(
+                ['docker', 'run', '--rm', '--gpus', 'all', test_image, 'nvidia-smi'],
+                capture_output=True, text=True, timeout=30
+            )
+            if result.returncode == 0:
+                print("[INFO] GPU method detected: --gpus")
+                return "gpus"
+        except subprocess.TimeoutExpired:
+            print("[WARNING] --gpus test timed out")
+        except Exception as e:
+            print(f"[WARNING] --gpus test failed: {e}")
+        
+        print("[INFO] Testing GPU support with --runtime=nvidia...")
+        try:
+            result = subprocess.run(
+                ['docker', 'run', '--rm', '--runtime=nvidia', test_image, 'nvidia-smi'],
+                capture_output=True, text=True, timeout=30
+            )
+            if result.returncode == 0:
+                print("[INFO] GPU method detected: --runtime=nvidia")
+                return "runtime"
+        except subprocess.TimeoutExpired:
+            print("[WARNING] --runtime=nvidia test timed out")
+        except Exception as e:
+            print(f"[WARNING] --runtime=nvidia test failed: {e}")
+        
+        print("[ERROR] No GPU method available")
+        return None
+
+    def _build_gpu_args(self, gpus: Optional[str]) -> tuple[List[str], List[str]]:
+        """
+        Формирует аргументы Docker для GPU.
+        Returns: (args_list, env_list)
+        """
+        if gpus is None:
+            return ([], [])
+        
+        if self.gpu_method == "gpus":
+            if gpus == "all":
+                return (["--gpus", "all"], [])
+            else:
+                return (["--gpus", f"\"device={gpus}\""], [])
+        
+        elif self.gpu_method == "runtime":
+            env = [
+                "-e", f"NVIDIA_VISIBLE_DEVICES={gpus}",
+                "-e", f"NVIDIA_DRIVER_CAPABILITIES={self.s.nvidia_caps}"
+            ]
+            return (["--runtime", self.s.runtime], env)
+        
+        else:
+            return ([], [])
+
+    def check_docker_gpu_support(self) -> tuple[bool, Optional[str]]:
+        """
+        Проверяет поддержку GPU в Docker.
+        Returns: (success: bool, method: "gpus"|"runtime"|None)
+        """
+        try:
+            method = self._detect_gpu_method()
+            if method:
+                print(f"[INFO] Docker GPU support confirmed with method: {method}")
+                return (True, method)
+            else:
+                print("[ERROR] Docker GPU support NOT available")
+                return (False, None)
+        except Exception as e:
+            print(f"[ERROR] GPU check failed: {e}")
+            return (False, None)
+
     def start(self, container_name: str, ssh_port: int, jup_port: int, ssh_password: str, jupyter_token: str, ssh_username: str = "root", gpus: Optional[str] = None, image: Optional[str] = None, cpuset_cpus: Optional[str] = None, memory_gb: Optional[int] = None, memory_swap_gb: Optional[int] = None, shm_size_gb: Optional[int] = None, storage_gb: Optional[int] = None) -> Optional[str]:
         """
         Запустить/создать контейнер с указанными параметрами.
@@ -144,27 +224,28 @@ class ContainerManager:
         work_vol = f"{name}-work"
         self._run(["docker", "volume", "create", work_vol])
 
-        # legacy GPU runtime 
+        gpu_args, gpu_env = self._build_gpu_args(gpus)
+
         env = [
             "-e", f"SSH_PASSWORD={ssh_password}",
             "-e", f"JUPYTER_TOKEN={jupyter_token}",
-            "-e", f"NVIDIA_DRIVER_CAPABILITIES={self.s.nvidia_caps}",
-            "-e", f"NVIDIA_VISIBLE_DEVICES={'all' if not gpus else gpus}",
         ]
+        env.extend(gpu_env)
 
         args = [
             "docker", "run", "-d",
             "--name", name,
-            "--runtime", self.s.runtime,
+        ]
+        args.extend(gpu_args)
+        args.extend([
             "--ulimit", "memlock=-1", "--ulimit", f"stack={self.s.ulimit_stack}",
-            # shm-size (overridable)
             "--shm-size", (f"{shm_size_gb}g" if shm_size_gb is not None else self.s.shm_size),
             "-p", f"{ssh_port}:22",
             "-p", f"{jup_port}:8888",
             *env,
             "-v", f"{work_vol}:/work",
             "--restart", "unless-stopped",
-        ]
+        ])
 
         # CPU pinning
         if cpuset_cpus:
@@ -252,21 +333,23 @@ class ContainerManager:
         work_vol = f"{name}-work"
         self._run(["docker", "volume", "create", work_vol])
 
+        gpu_args, gpu_env = self._build_gpu_args(gpus)
+
         env = [
             "-e", f"SSH_PASSWORD={ssh_password}",
             "-e", f"JUPYTER_TOKEN={jupyter_token}",
-            "-e", f"NVIDIA_DRIVER_CAPABILITIES={self.s.nvidia_caps}",
-            "-e", f"NVIDIA_VISIBLE_DEVICES={'all' if not gpus else gpus}",
         ]
+        env.extend(gpu_env)
 
         args = [
             "docker", "run", "-d",
             "--name", name,
-            "--runtime", self.s.runtime,
-            "--ulimit", "memlock=-1", "--ulimit", f"stack={self.s.ulimit_stack}",
-            # shm-size (overridable)
-            "--shm-size", (f"{shm_size_gb}g" if shm_size_gb is not None else self.s.shm_size),
         ]
+        args.extend(gpu_args)
+        args.extend([
+            "--ulimit", "memlock=-1", "--ulimit", f"stack={self.s.ulimit_stack}",
+            "--shm-size", (f"{shm_size_gb}g" if shm_size_gb is not None else self.s.shm_size),
+        ])
         
         # Добавляем все порты из маппинга
         for host_port, container_port in port_mapping.items():
@@ -467,59 +550,6 @@ class ContainerManager:
             
         except Exception as e:
             print(f"[ERROR] Failed to fix Docker permissions: {e}")
-            return False
-
-    def check_docker_gpu_support(self) -> bool:
-        """Проверяет поддержку GPU в Docker"""
-        try:
-            print("[INFO] Checking Docker GPU support...")
-            
-            # Проверяем наличие nvidia-container-toolkit
-            try:
-                result = subprocess.run(['nvidia-container-cli', 'info'], 
-                                      capture_output=True, text=True, timeout=10)
-                if result.returncode == 0:
-                    print("[INFO] nvidia-container-toolkit found")
-                    
-                    # Проверяем, работает ли --gpus флаг
-                    try:
-                        result = subprocess.run(['docker', 'run', '--rm', '--gpus', 'all', 'ubuntu:20.04', 'nvidia-smi'], 
-                                              capture_output=True, text=True, timeout=30)
-                        if result.returncode == 0:
-                            print("[INFO] Docker GPU support confirmed with --gpus flag")
-                            return True
-                    except:
-                        pass
-                    
-                    # Проверяем --runtime=nvidia
-                    try:
-                        result = subprocess.run(['docker', 'run', '--rm', '--runtime=nvidia', 'ubuntu:20.04', 'nvidia-smi'], 
-                                              capture_output=True, text=True, timeout=30)
-                        if result.returncode == 0:
-                            print("[INFO] Docker GPU support confirmed with --runtime=nvidia")
-                            return True
-                    except:
-                        pass
-                    
-                    print("[WARNING] nvidia-container-toolkit found but GPU access not working")
-                    return False
-            except:
-                pass
-
-            # Проверяем наличие nvidia-docker
-            try:
-                result = subprocess.run(['docker', 'run', '--rm', '--runtime=nvidia', 'ubuntu:20.04', 'nvidia-smi'], 
-                                      capture_output=True, text=True, timeout=30)
-                if result.returncode == 0:
-                    print("[INFO] Docker GPU support confirmed with nvidia-docker")
-                    return True
-            except:
-                pass
-            
-            print("[WARNING] Docker GPU support not available")
-            return False
-        except Exception as e:
-            print(f"[WARNING] Docker GPU support check failed: {e}")
             return False
 
 

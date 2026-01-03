@@ -3,6 +3,7 @@
 SERVICE_NAME="gpugo-agent"
 SERVICE_FILE="/etc/systemd/system/gpugo-agent.service"
 KEY_FILE=".agent_key"
+AGENT_ID_FILE=".agent_id"
 
 case "$1" in
     install)
@@ -58,10 +59,11 @@ EOF
         ;;
     
     uninstall)
-        [ ! -f "$KEY_FILE" ] && echo "Nothing to uninstall" && exit 1
+        [ ! -f "$KEY_FILE" ] && [ ! -f "$AGENT_ID_FILE" ] && [ ! -f "$SERVICE_FILE" ] && echo "Nothing to uninstall" && exit 1
         sudo systemctl stop "$SERVICE_NAME" 2>/dev/null
         sudo systemctl disable "$SERVICE_NAME" 2>/dev/null
         sudo rm -f "$SERVICE_FILE"
+        sudo rm -f "$AGENT_ID_FILE"
         sudo systemctl daemon-reload
         rm -f "$KEY_FILE"
         ;;

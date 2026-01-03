@@ -603,13 +603,30 @@ class Agent:
         else:
             print("[INFO] Docker permissions are OK")
         
-        # Проверяем поддержку GPU в Docker (только один раз при инициализации)
-        print("[INFO] Checking Docker GPU support...")
-        gpu_support = self.container_manager.check_docker_gpu_support()
-        if not gpu_support:
-            print("[WARNING] GPU support not available in Docker, containers will run without GPU access")
-        else:
-            print("[INFO] Docker GPU support confirmed")
+        # КРИТИЧЕСКАЯ проверка GPU support (только один раз при инициализации)
+        print("[INFO] Checking Docker GPU support (REQUIRED)...")
+        gpu_available, gpu_method = self.container_manager.check_docker_gpu_support()
+        
+        if not gpu_available:
+            print("[CRITICAL] GPU support is REQUIRED but not available!")
+            print("[CRITICAL] Please install nvidia-container-toolkit or nvidia-docker")
+            print("[CRITICAL] Agent cannot start without GPU support")
+            try:
+                if self.api_client.agent_id:
+                    self.api_client.send_log("CRITICAL: GPU support not available - agent init failed")
+            except Exception:
+                pass
+            return False
+        
+        # Кэшируем обнаруженный метод GPU
+        self.container_manager.gpu_method = gpu_method
+        print(f"[INFO] GPU support confirmed. Using method: {gpu_method}")
+        
+        try:
+            if self.api_client.agent_id:
+                self.api_client.send_log(f"GPU support: {gpu_method}")
+        except Exception:
+            pass
         
         # Собираем данные о системе
         system_data = self.collect_system_data()

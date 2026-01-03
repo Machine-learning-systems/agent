@@ -87,59 +87,6 @@ class APIContainerManager(ContainerManager):
             print(f"[ERROR] Failed to fix Docker permissions: {e}")
             return False
 
-    def check_docker_gpu_support(self) -> bool:
-        """Проверяет поддержку GPU в Docker"""
-        try:
-            print("[INFO] Checking Docker GPU support...")
-            
-            # Проверяем наличие nvidia-container-toolkit
-            try:
-                result = subprocess.run(['nvidia-container-cli', 'info'], 
-                                      capture_output=True, text=True, timeout=10)
-                if result.returncode == 0:
-                    print("[INFO] nvidia-container-toolkit found")
-                    
-                    # Проверяем, работает ли --gpus флаг
-                    try:
-                        result = subprocess.run(['docker', 'run', '--rm', '--gpus', 'all', 'ubuntu:20.04', 'nvidia-smi'], 
-                                              capture_output=True, text=True, timeout=30)
-                        if result.returncode == 0:
-                            print("[INFO] Docker GPU support confirmed with --gpus flag")
-                            return True
-                    except:
-                        pass
-                    
-                    # Проверяем --runtime=nvidia
-                    try:
-                        result = subprocess.run(['docker', 'run', '--rm', '--runtime=nvidia', 'ubuntu:20.04', 'nvidia-smi'], 
-                                              capture_output=True, text=True, timeout=30)
-                        if result.returncode == 0:
-                            print("[INFO] Docker GPU support confirmed with --runtime=nvidia")
-                            return True
-                    except:
-                        pass
-                    
-                    print("[WARNING] nvidia-container-toolkit found but GPU access not working")
-                    return False
-            except:
-                pass
-
-            # Проверяем наличие nvidia-docker
-            try:
-                result = subprocess.run(['docker', 'run', '--rm', '--runtime=nvidia', 'ubuntu:20.04', 'nvidia-smi'], 
-                                      capture_output=True, text=True, timeout=30)
-                if result.returncode == 0:
-                    print("[INFO] Docker GPU support confirmed with nvidia-docker")
-                    return True
-            except:
-                pass
-            
-            print("[WARNING] Docker GPU support not available")
-            return False
-        except Exception as e:
-            print(f"[WARNING] Docker GPU support check failed: {e}")
-            return False
-
     def wait_for_ssh_ready(self, host: str, port: int, timeout: int = 60) -> bool:
         """Ждет, пока SSH сервис будет готов к подключению"""
         start_time = time.time()
