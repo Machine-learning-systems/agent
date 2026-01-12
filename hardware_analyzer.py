@@ -7,6 +7,8 @@ import re
 import os
 import socket
 import time
+import math
+import json
 import psutil
 import requests
 from typing import List, Dict, Optional, Tuple, Any
@@ -252,7 +254,7 @@ class HardwareAnalyzer:
                     if model:
                         gpus.append({
                             "model": model.group(1),
-                            "vram_gb": int(vram.group(1)) // 1024 if vram else 0,
+                            "vram_gb": math.ceil(int(vram.group(1)) / 1024) if vram else 0,
                             "max_cuda_version": None,
                             "tflops": None,
                             "bandwidth_gbps": None,
@@ -272,7 +274,7 @@ class HardwareAnalyzer:
                         driver = parts[-1] if len(parts) > 1 else None
                         gpus.append({
                             "model": model,
-                            "vram_gb": vram // (1024 ** 3) if vram else 0,
+                            "vram_gb": math.ceil(vram / (1024 ** 3)) if vram else 0,
                             "max_cuda_version": None,
                             "tflops": None,
                             "bandwidth_gbps": None,
@@ -306,11 +308,11 @@ class HardwareAnalyzer:
                                                 vram_size = int(vram_match.group(1))
                                                 vram_unit = vram_match.group(2)
                                                 if vram_unit == 'MiB':
-                                                    vram_gb = vram_size // 1024
+                                                    vram_gb = math.ceil(vram_size / 1024)
                                                 elif vram_unit == 'GiB':
-                                                    vram_gb = vram_size
+                                                    vram_gb = math.ceil(vram_size)
                                                 else:
-                                                    vram_gb = vram_size // 1024
+                                                    vram_gb = math.ceil(vram_size / 1024)
                                             
                                             cuda_match = re.search(r'CUDA Version: (\d+\.\d+)', driver_version)
                                             if cuda_match:
@@ -410,167 +412,71 @@ class HardwareAnalyzer:
             
         disks = []
         
+        if self.system != "Linux":
+            print(f"[WARNING] Disk detection only supported on Linux")
+            self._disk_info_cache = disks
+            return disks
+        
         try:
-            if self.system == "Darwin":
-                # macOS
-                disk_list = subprocess.check_output(['diskutil', 'list']).decode()
-                for match in re.finditer(r'/dev/(disk\d+)', disk_list):
-                    disk = match.group(1)
-                    try:
-                        info = subprocess.check_output(['diskutil', 'info', disk]).decode()
-                        model = re.search(r'Device / Media Name: (.+)', info)
-                        size = re.search(r'Total Size:.*\((\d+(?:\.\d+)?)\s+GB\)', info)
-                        dtype = re.search(r'Protocol: (.+)', info)
-                        disks.append({
-                            "model": model.group(1) if model else disk,
-                            "type": dtype.group(1) if dtype else None,
-                            "size_gb": float(size.group(1)) if size else None,
-                            "read_speed_mb_s": None,
-                            "write_speed_mb_s": None
-                        })
-                    except Exception:
-                        continue
-                        
-            elif self.system == "Windows":
-                # Windows
-                out = subprocess.check_output(['wmic', 'diskdrive', 'get', 'Model,Size,MediaType,InterfaceType'], shell=True).decode(errors='ignore')
-                for line in out.split('\n')[1:]:
-                    if line.strip():
-                        parts = line.split()
-                        if len(parts) >= 4:
-                            model = ' '.join(parts[:-3])
-                            dtype = parts[-2]
-                            size = int(parts[-3]) if parts[-3].isdigit() else None
-                            size_gb = size // (1024 ** 3) if size else None
-                            disks.append({
-                                "model": model,
-                                "type": dtype,
-                                "size_gb": size_gb,
-                                "read_speed_mb_s": None,
-                                "write_speed_mb_s": None
-                            })
-                            
-            elif self.system == "Linux":
-                # Linux
+            lsblk_output = subprocess.check_output(['lsblk', '-d', '-o', 'MODEL,SIZE,NAME', '-J'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+            blockdevices = json.loads(lsblk_output)['blockdevices']
+            
+            for device in blockdevices:
+                if not device.get('model'):
+                    continue
+                
+                model = device['model'].strip()
+                size_str = device.get('size', '')
+                name = device.get('name', '')
+                
+                if not size_str or size_str == '-':
+                    continue
+                
+                size_gb = None
                 try:
-                    lsblk_output = subprocess.check_output(['lsblk', '-d', '-o', 'NAME,MODEL,SIZE,TYPE'], stderr=subprocess.DEVNULL).decode(errors='ignore')
-                    lines = lsblk_output.split('\n')
+                    size_str = size_str.strip()
                     
-                    header_index = -1
-                    for i, line in enumerate(lines):
-                        if 'NAME' in line and 'MODEL' in line and 'SIZE' in line and 'TYPE' in line:
-                            header_index = i
-                            break
-                    
-                    for line in lines[header_index + 1:]:
-                        if line.strip() and 'disk' in line:
-                            parts = line.split()
-                            if len(parts) >= 4:
-                                name = parts[0]
-                                dtype = parts[-1]
-                                
-                                size_str = None
-                                model_parts = []
-                                
-                                for i, part in enumerate(parts[1:-1]):
-                                    if any(unit in part.upper() for unit in ['G', 'T', 'M', 'K']) and any(char.isdigit() for char in part):
-                                        size_str = part
-                                        model_parts = parts[1:i+1]
-                                        break
-                                
-                                if size_str is None and len(parts) >= 5:
-                                    size_str = parts[-2]
-                                    model_parts = parts[1:-2]
-                                
-                                if size_str in ['-', 'Unknown', 'LEGEND'] or not size_str:
-                                    continue
-                                
-                                model = ' '.join(model_parts) if model_parts else "Unknown"
-                                
-                                if any(char.isalpha() and char.upper() not in ['G', 'T', 'M', 'K', 'I', 'B'] for char in size_str):
-                                    continue
-                                
-                                size_gb = None
-                                if size_str != '-':
-                                    try:
-                                        size_str = size_str.strip()
-                                        
-                                        if not re.match(r'^[\d\.]+[GMTK]?[i]?[B]?$', size_str, re.IGNORECASE):
-                                            continue
-                                        
-                                        if 'G' in size_str.upper():
-                                            size_gb = float(size_str.replace('G', '').replace('g', ''))
-                                        elif 'T' in size_str.upper():
-                                            size_gb = float(size_str.replace('T', '').replace('t', '')) * 1024
-                                        elif 'M' in size_str.upper():
-                                            size_gb = float(size_str.replace('M', '').replace('m', '')) / 1024
-                                        elif 'K' in size_str.upper():
-                                            size_gb = float(size_str.replace('K', '').replace('k', '')) / (1024 * 1024)
-                                        elif size_str.isdigit():
-                                            size_bytes = int(size_str)
-                                            size_gb = size_bytes // (1024**3)
-                                        else:
-                                            number_match = re.search(r'(\d+(?:\.\d+)?)', size_str)
-                                            if number_match:
-                                                number = float(number_match.group(1))
-                                                if 'T' in size_str.upper():
-                                                    size_gb = number * 1024
-                                                elif 'M' in size_str.upper():
-                                                    size_gb = number / 1024
-                                                elif 'K' in size_str.upper():
-                                                    size_gb = number / (1024 * 1024)
-                                                else:
-                                                    size_gb = number
-                                    except Exception as e:
-                                        print(f"[WARNING] Failed to parse disk size '{size_str}': {e}")
-                                        pass
-                                
-                                # Определяем тип диска
-                                disk_type = "Unknown"
-                                try:
-                                    if os.path.exists(f'/sys/block/{name.replace("/dev/", "")}/queue/rotational'):
-                                        with open(f'/sys/block/{name.replace("/dev/", "")}/queue/rotational', 'r') as f:
-                                            rotational = f.read().strip()
-                                            disk_type = "SSD" if rotational == "0" else "HDD"
-                                except:
-                                    pass
-                                
-                                disks.append({
-                                    "model": model,
-                                    "type": disk_type,
-                                    "size_gb": size_gb,
-                                    "read_speed_mb_s": None,
-                                    "write_speed_mb_s": None
-                                })
+                    if 'T' in size_str.upper():
+                        size_gb = math.ceil(float(re.search(r'(\d+(?:\.\d+)?)', size_str).group(1)) * 1024)
+                    elif 'G' in size_str.upper():
+                        size_gb = math.ceil(float(re.search(r'(\d+(?:\.\d+)?)', size_str).group(1)))
+                    elif 'M' in size_str.upper():
+                        size_gb = math.ceil(float(re.search(r'(\d+(?:\.\d+)?)', size_str).group(1)) / 1024)
+                    elif 'K' in size_str.upper():
+                        size_gb = math.ceil(float(re.search(r'(\d+(?:\.\d+)?)', size_str).group(1)) / (1024 * 1024))
+                    else:
+                        number_match = re.search(r'(\d+(?:\.\d+)?)', size_str)
+                        if number_match:
+                            size_gb = math.ceil(float(number_match.group(1)))
                 except Exception as e:
-                    print(f"[WARNING] lsblk failed: {e}")
-                    # Fallback
+                    print(f"[WARNING] Failed to parse disk size '{size_str}': {e}")
+                    continue
+                
+                if size_gb is None:
+                    continue
+                
+                disk_type = "Unknown"
+                if name:
                     try:
-                        with open('/proc/partitions', 'r') as f:
-                            for line in f.readlines()[2:]:
-                                parts = line.split()
-                                if len(parts) >= 4 and (parts[3].endswith('sd') or parts[3].endswith('nvme') or parts[3].endswith('hd')):
-                                    name = f"/dev/{parts[3]}"
-                                    size_gb = int(parts[2]) // (1024 * 1024)
-                                    disks.append({
-                                        "model": "Unknown",
-                                        "type": "Unknown",
-                                        "size_gb": size_gb,
-                                        "read_speed_mb_s": None,
-                                        "write_speed_mb_s": None
-                                    })
-                    except Exception as e2:
-                        print(f"[WARNING] /proc/partitions also failed: {e2}")
+                        disk_name = name.replace("/dev/", "")
+                        rotational_path = f'/sys/block/{disk_name}/queue/rotational'
+                        if os.path.exists(rotational_path):
+                            with open(rotational_path, 'r') as f:
+                                rotational = f.read().strip()
+                                disk_type = "SSD" if rotational == "0" else "HDD"
+                    except Exception:
                         pass
+                
+                disks.append({
+                    "model": model,
+                    "type": disk_type,
+                    "size_gb": size_gb,
+                    "read_speed_mb_s": None,
+                    "write_speed_mb_s": None
+                })
+                
         except Exception as e:
             print(f"[ERROR] Disk info failed: {e}")
-            disks.append({
-                "model": "Unknown Disk",
-                "type": "Unknown",
-                "size_gb": 100,
-                "read_speed_mb_s": None,
-                "write_speed_mb_s": None
-            })
         
         self._disk_info_cache = disks
         return disks
@@ -689,7 +595,7 @@ class HardwareAnalyzer:
         if self._ram_info_cache is not None:
             return self._ram_info_cache
             
-        total_ram_gb = round(psutil.virtual_memory().total / (1024 ** 3))
+        total_ram_gb = math.ceil(psutil.virtual_memory().total / (1024 ** 3))
         ram_type = "Unknown"
         
         try:
