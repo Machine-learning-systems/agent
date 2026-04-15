@@ -20,6 +20,19 @@ from clean_manager import ContainerManager
 AGENT_ID_FILE = ".agent_id"
 
 
+def format_exception_message(error: Exception) -> str:
+    message = str(error)
+    if isinstance(error, subprocess.CalledProcessError):
+        details = []
+        if error.stderr:
+            details.append(f"stderr: {error.stderr.strip()}")
+        if error.stdout:
+            details.append(f"stdout: {error.stdout.strip()}")
+        if details:
+            message = f"{message}\n" + "\n".join(details)
+    return message
+
+
 class Agent:
     """Основной класс агента"""
     
@@ -359,7 +372,12 @@ class Agent:
                     self.api_client.send_log("task error: docker_image not specified")
                 except Exception:
                     pass
-                return None
+                return {
+                    'status': 'failed',
+                    'container_id': '',
+                    'container_name': None,
+                    'error_message': 'No docker_image specified in task'
+                }
 
             # GPU allocation
             gpu_required = task_data.get('gpu_required', 0) or 0
@@ -417,6 +435,8 @@ class Agent:
             
             # Проверяем наличие port_mapping для новой логики
             port_mapping = container_info.get('port_mapping')
+            container_ports = container_info.get('container_ports')
+            agent_ports = task.get('agent_ports') or {}
             
             if port_mapping and isinstance(port_mapping, dict):
                 # Новая логика с port_mapping
@@ -428,7 +448,12 @@ class Agent:
                         self.api_client.send_log("task error: missing ssh password")
                     except Exception:
                         pass
-                    return None
+                    return {
+                        'status': 'failed',
+                        'container_id': '',
+                        'container_name': None,
+                        'error_message': 'Missing SSH password in container_info'
+                    }
                 
                 # Формируем имя контейнера
                 task_id = task.get('id', int(time.time()))
@@ -482,7 +507,73 @@ class Agent:
                         'gpu_support': bool(gpus_param)
                     }
                 }
-                
+
+            elif container_ports and isinstance(container_ports, list):
+                print(f"[INFO] Selecting host ports for container ports: {container_ports}")
+
+                if not ssh_password:
+                    print("[ERROR] Missing SSH password in container_info")
+                    try:
+                        self.api_client.send_log("task error: missing ssh password")
+                    except Exception:
+                        pass
+                    return {
+                        'status': 'failed',
+                        'container_id': '',
+                        'container_name': None,
+                        'error_message': 'Missing SSH password in container_info'
+                    }
+
+                task_id = task.get('id', int(time.time()))
+                container_name = f"task_{task_id}"
+                ports_start = agent_ports.get('available_ports_start')
+                ports_end = agent_ports.get('available_ports_end')
+                ssh_port_result, port_mapping = self.container_manager.build_port_mapping_from_range(
+                    int(ports_start),
+                    int(ports_end),
+                    container_ports,
+                )
+
+                try:
+                    self.api_client.send_log(f"task start requested: id={task_id} image={docker_image}")
+                except Exception:
+                    pass
+
+                container_id = self.container_manager.start_with_port_mapping(
+                    container_name=container_name,
+                    port_mapping=port_mapping,
+                    ssh_password=ssh_password,
+                    jupyter_token=ssh_password,
+                    ssh_username=ssh_username,
+                    gpus=gpus_param,
+                    image=docker_image,
+                    cpuset_cpus=cpuset_cpus,
+                    memory_gb=memory_gb,
+                    memory_swap_gb=memory_gb,
+                    shm_size_gb=shm_size_gb,
+                    storage_gb=storage_gb
+                )
+
+                result = {
+                    'container_id': container_id,
+                    'container_name': container_name,
+                    'ssh_port': ssh_port_result,
+                    'ssh_host': ssh_host,
+                    'ssh_command': f"ssh root@{ssh_host} -p {ssh_port_result}",
+                    'ssh_username': ssh_username,
+                    'ssh_password': ssh_password,
+                    'port_mapping': port_mapping,
+                    'status': 'running',
+                    'allocated_resources': {
+                        'cpu_cpuset': cpuset_cpus,
+                        'ram_gb': memory_gb,
+                        'gpu_count': gpu_required,
+                        'gpu_devices': gpus_param,
+                        'storage_gb': storage_gb,
+                        'gpu_support': bool(gpus_param)
+                    }
+                }
+
             else:
                 # Старая логика для обратной совместимости
                 if not all([ssh_password, ssh_port]):
@@ -491,7 +582,12 @@ class Agent:
                         self.api_client.send_log("task error: missing ssh credentials")
                     except Exception:
                         pass
-                    return None
+                    return {
+                        'status': 'failed',
+                        'container_id': '',
+                        'container_name': None,
+                        'error_message': 'Missing SSH credentials in container_info'
+                    }
                 
                 print(f"[INFO] Using SSH credentials from task:")
                 print(f"  Username: {ssh_username}")
@@ -565,12 +661,19 @@ class Agent:
             return result
                 
         except Exception as e:
-            print(f"[ERROR] Task processing failed: {e}")
+            error_message = format_exception_message(e)
+            print(f"[ERROR] Task processing failed: {error_message}")
             try:
-                self.api_client.send_log(f"task processing exception: {e}")
+                self.api_client.send_log(f"task processing exception: {error_message}")
             except Exception:
                 pass
-            return None
+            task_id = task.get('id')
+            return {
+                'status': 'failed',
+                'container_id': '',
+                'container_name': f"task_{task_id}" if task_id is not None else None,
+                'error_message': error_message,
+            }
     
     def initialize(self) -> bool:
         """Инициализирует агента"""

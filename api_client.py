@@ -174,7 +174,8 @@ class APIClient:
                         full_task = {
                             'id': task_id,
                             'task_data': task_data,
-                            'container_info': container_info
+                            'container_info': container_info,
+                            'agent_ports': data.get('agent_ports') or {}
                         }
                         
                         # Вызываем callback с задачей
@@ -271,6 +272,12 @@ class APIClient:
         }
         if container_info.get('container_name') is not None:
             data["container_name"] = container_info.get('container_name')
+        if container_info.get('ssh_host') is not None:
+            data["ssh_host"] = container_info.get('ssh_host')
+        if container_info.get('ssh_port') is not None:
+            data["ssh_port"] = container_info.get('ssh_port')
+        if container_info.get('ssh_password') is not None:
+            data["ssh_password"] = container_info.get('ssh_password')
         if status == "running":
             # Совместимость: добавляем прогресс и output если известны ssh_host/port
             ssh_host = container_info.get('ssh_host')

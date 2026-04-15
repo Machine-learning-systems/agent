@@ -6,7 +6,7 @@ import re
 import socket
 import subprocess
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 
 @dataclass
@@ -34,6 +34,10 @@ class ContainerManager:
         except subprocess.CalledProcessError as e:
             if not quiet:
                 print(f"[ERROR] Command failed with return code {e.returncode}")
+                if e.stderr:
+                    print(f"[ERROR] stderr: {e.stderr.strip()}")
+                if e.stdout:
+                    print(f"[ERROR] stdout: {e.stdout.strip()}")
             raise
         except Exception as e:
             if not quiet:
@@ -47,6 +51,11 @@ class ContainerManager:
     def _running(self, name: str) -> bool:
         out = self._run(["docker", "ps", "--format", "{{.Names}}"], capture_output=True).stdout.splitlines()
         return name in out
+
+    def _container_id(self, name: str) -> Optional[str]:
+        result = self._run(["docker", "inspect", "-f", "{{.Id}}", name], check=False, capture_output=True, quiet=True)
+        container_id = result.stdout.strip()
+        return container_id or None
 
     def _docker_images_has(self, image: str) -> bool:
         cp = self._run(["docker", "image", "inspect", image], check=False, capture_output=True, quiet=True)
@@ -104,6 +113,39 @@ class ContainerManager:
                 bad.append(str(host_port))
         if bad:
             raise RuntimeError(f"Порты заняты: {', '.join(bad)}")
+
+    def find_free_port_block(self, port_start: int, port_end: int, count: int) -> int:
+        if count <= 0:
+            raise RuntimeError("Не задан список внутренних портов")
+        if not port_start or not port_end or port_start > port_end:
+            raise RuntimeError("Некорректный диапазон портов агента")
+        if port_end - port_start + 1 < count:
+            raise RuntimeError("Диапазон портов агента меньше требуемого блока")
+
+        for base_port in range(port_start, port_end - count + 2):
+            if all(self._port_free(port) for port in range(base_port, base_port + count)):
+                return base_port
+
+        raise RuntimeError(f"Нет свободного блока из {count} портов в диапазоне {port_start}-{port_end}")
+
+    def build_port_mapping_from_range(self, port_start: int, port_end: int, container_ports: List[int]) -> Tuple[int, Dict[int, int]]:
+        normalized_ports = []
+        for port in container_ports:
+            try:
+                normalized_ports.append(int(port))
+            except (TypeError, ValueError):
+                continue
+
+        if not normalized_ports:
+            normalized_ports = [22, 8888]
+
+        base_port = self.find_free_port_block(port_start, port_end, len(normalized_ports))
+        port_mapping = {
+            base_port + offset: container_port
+            for offset, container_port in enumerate(normalized_ports)
+        }
+
+        return base_port, port_mapping
 
     def _detect_gpu_method(self) -> Optional[str]:
         """
@@ -201,7 +243,7 @@ class ContainerManager:
             print(f"[INFO] Контейнер уже запущен: {name}")
             print(f"[INFO] SSH:     ssh -p {ssh_port} {ssh_username}@<host>  (пароль: {ssh_password})")
             print(f"[INFO] Jupyter: http://<host>:{jup_port}/lab (token:  {jupyter_token})")
-            return
+            return self._container_id(name)
 
         if self._exists(name):
             print(f"[INFO] Контейнер существует, стартуем: {name}")
@@ -209,7 +251,7 @@ class ContainerManager:
             print(f"[OK]   Запущено.")
             print(f"[INFO] SSH:     ssh -p {ssh_port} {ssh_username}@<host>  (пароль: {ssh_password})")
             print(f"[INFO] Jupyter: http://<host>:{jup_port}/lab (token:  {jupyter_token})")
-            return
+            return self._container_id(name)
 
         self._assert_ports_free(ssh_port, jup_port)
 
@@ -307,7 +349,7 @@ class ContainerManager:
                 print(f"[INFO] SSH:     ssh -p {ssh_port} {ssh_username}@<host>  (пароль: {ssh_password})")
             if jup_port:
                 print(f"[INFO] Jupyter: http://<host>:{jup_port}/lab (token:  {jupyter_token})")
-            return
+            return self._container_id(name)
 
         if self._exists(name):
             print(f"[INFO] Контейнер существует, стартуем: {name}")
@@ -317,7 +359,7 @@ class ContainerManager:
                 print(f"[INFO] SSH:     ssh -p {ssh_port} {ssh_username}@<host>  (пароль: {ssh_password})")
             if jup_port:
                 print(f"[INFO] Jupyter: http://<host>:{jup_port}/lab (token:  {jupyter_token})")
-            return
+            return self._container_id(name)
 
         # Проверяем, что все порты свободны
         self._assert_port_mapping_free(port_mapping)
@@ -604,4 +646,3 @@ As a library:
     m.start("my-container", 2222, 2223, "mypass", "mytoken", ssh_username="root", gpus="0,2")
     m.stop("my-container")
 """
-
