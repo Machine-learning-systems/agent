@@ -286,6 +286,7 @@ class ContainerManager:
             "-p", f"{jup_port}:8888",
             *env,
             "-v", f"{work_vol}:/work",
+            "-v", f"{work_vol}:/workspace",
             "--restart", "unless-stopped",
         ])
 
@@ -398,7 +399,11 @@ class ContainerManager:
             args.extend(["-p", f"{host_port}:{container_port}"])
         
         args.extend(env)
-        args.extend(["-v", f"{work_vol}:/work", "--restart", "unless-stopped"])
+        args.extend([
+            "-v", f"{work_vol}:/work",
+            "-v", f"{work_vol}:/workspace",
+            "--restart", "unless-stopped",
+        ])
 
         # CPU pinning
         if cpuset_cpus:
